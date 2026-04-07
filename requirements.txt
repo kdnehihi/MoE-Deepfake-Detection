@@ -1,0 +1,8 @@
+timm
+torch
+torchvision
+facenet-pytorch
+opencv-python
+Pillow
+PyYAML
+numpy

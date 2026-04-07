@@ -17,6 +17,11 @@ class DatasetSpec:
     frames_per_video: int = 8
     image_size: int = 224
     face_detector: str = "mtcnn"
+    processed_root: str | None = None
+    manifest_path: str | None = None
+    max_videos: int | None = None
+    detector_margin: int = 24
+    overwrite_processed: bool = False
 
 
 @dataclass(slots=True)

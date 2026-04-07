@@ -31,13 +31,28 @@ class MoEFFDDetector(nn.Module):
         self.blocks = nn.ModuleList(
             MoETransformerBlock(
                 block_index=block_index,
-                embed_dim=config.backbone.embed_dim,
+                embed_dim=self.backbone.embed_dim,
                 config=config,
+                frozen_block=frozen_block,
             )
-            for block_index in range(12)
+            for block_index, frozen_block in enumerate(self.backbone.model.blocks)
         )
-        self.classifier = nn.Linear(config.backbone.embed_dim, config.classifier.num_classes)
+        self.classifier_dropout = nn.Dropout(config.classifier.dropout)
+        self.classifier = nn.Linear(self.backbone.embed_dim, config.classifier.num_classes)
 
     def forward(self, images: Tensor) -> tuple[Tensor, ModelAuxiliaryOutput]:
-        raise NotImplementedError("MoEFFDDetector.forward is implemented in Step 3.")
+        tokens = self.backbone.embed_patches(images)
+        auxiliary_outputs: list[BlockAuxiliaryOutput] = []
 
+        for block in self.blocks:
+            tokens, block_aux = block(tokens)
+            auxiliary_outputs.append(block_aux)
+
+        final_norm = getattr(self.backbone.model, "norm", None)
+        if final_norm is not None:
+            tokens = final_norm(tokens)
+
+        cls_token = tokens[:, 0]
+        logits = self.classifier(self.classifier_dropout(cls_token))
+        aux = ModelAuxiliaryOutput(blocks=auxiliary_outputs)
+        return logits, aux

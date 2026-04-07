@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import torch
 from torch import Tensor, nn
 
 from models.adapter_experts import ADAPTER_EXPERT_REGISTRY, BaseAdapterExpert
@@ -46,5 +47,15 @@ class MoEAdapterLayer(nn.Module):
         return expert_cls(input_dim=input_dim, config=config)
 
     def forward(self, tokens: Tensor, spatial_shape: tuple[int, int]) -> tuple[Tensor, AdapterAuxiliaryOutput]:
-        raise NotImplementedError("MoEAdapterLayer.forward is implemented in Step 3.")
+        router_logits, selected_experts, expert_weights = self.gate(tokens)
 
+        expert_outputs = [expert(tokens, spatial_shape) for expert in self.experts]
+        stacked_outputs = torch.stack(expert_outputs, dim=1)
+        weighted_output = torch.einsum("be,benc->bnc", expert_weights, stacked_outputs)
+
+        aux = AdapterAuxiliaryOutput(
+            router_logits=router_logits,
+            selected_experts=selected_experts,
+            expert_weights=expert_weights,
+        )
+        return weighted_output, aux
