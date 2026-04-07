@@ -1,235 +1,227 @@
-"""Video-to-frame extraction and face crop preparation."""
+"""Simple video to face-frame preprocessing."""
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
 import json
+import random
 from pathlib import Path
-from typing import Iterable
 
+import cv2
 import numpy as np
+from facenet_pytorch import MTCNN
 from PIL import Image
 
 from utils.config import DatasetSpec
 
-@dataclass(slots=True)
-class FrameExtractionJob:
-    dataset_name: str
-    video_path: Path
-    output_dir: Path
-    label: int
-    frames_per_video: int
-    split: str
-    image_size: int = 224
-    detector_name: str = "mtcnn"
-    detector_margin: int = 24
-    overwrite: bool = False
+
+def get_processed_root(spec: DatasetSpec) -> Path:
+    if spec.processed_root:
+        return Path(spec.processed_root)
+    return Path("data/processed") / spec.name.lower()
 
 
-@dataclass(slots=True)
-class ExtractedFaceSample:
-    image_path: str
-    label: int
-    dataset_name: str
-    split: str
-    video_id: str
-    frame_index: int
-    source_video: str
+def get_manifest_path(spec: DatasetSpec) -> Path:
+    if spec.manifest_path:
+        return Path(spec.manifest_path)
+    return get_processed_root(spec) / f"{spec.name.lower()}_{spec.split}_manifest.jsonl"
 
 
-def _ensure_mtcnn(device: str | None = None):
-    try:
-        from facenet_pytorch import MTCNN
-    except ImportError as error:
-        raise ImportError(
-            "facenet-pytorch is required for face extraction. Install it before running frame extraction."
-        ) from error
-
-    return MTCNN(
-        image_size=None,
-        margin=0,
-        keep_all=False,
-        post_process=False,
-        device=device,
-    )
+def get_video_paths(spec: DatasetSpec) -> list[Path]:
+    root = Path(spec.root)
+    video_paths = sorted(root.rglob("*.mp4")) + sorted(root.rglob("*.avi"))
+    if spec.max_videos is not None:
+        video_paths = video_paths[: spec.max_videos]
+    return video_paths
 
 
-def _open_video(video_path: Path):
-    try:
-        import cv2
-    except ImportError as error:
-        raise ImportError("opencv-python is required for video decoding.") from error
+def get_label(dataset_name: str, video_path: Path) -> int:
+    path_text = str(video_path).lower()
+    if dataset_name.lower() in {"celebdf", "celebdf-v2", "celebdfv2"}:
+        if "celeb-synthesis" in path_text:
+            return 1
+        return 0
+    if dataset_name.lower() in {"faceforensics++", "faceforensicspp", "ff++"}:
+        if "manipulated_sequences" in path_text:
+            return 1
+        return 0
+    return 0
 
-    capture = cv2.VideoCapture(str(video_path))
-    if not capture.isOpened():
-        raise RuntimeError(f"Unable to open video: {video_path}")
-    return capture, cv2
 
-
-def _sample_frame_indices(total_frames: int, frames_per_video: int) -> list[int]:
-    if total_frames <= 0:
-        return []
+def sample_frame_indices(total_frames: int, frames_per_video: int) -> list[int]:
     if total_frames <= frames_per_video:
         return list(range(total_frames))
-    indices = np.linspace(0, total_frames - 1, num=frames_per_video, dtype=int)
-    return sorted(set(indices.tolist()))
+    return np.linspace(0, total_frames - 1, frames_per_video, dtype=int).tolist()
 
 
-def _infer_video_id(video_path: Path) -> str:
-    return video_path.stem
-
-
-def _crop_face(image: Image.Image, detector, margin: int) -> Image.Image | None:
+def crop_face(image: Image.Image, detector: MTCNN, margin: int) -> Image.Image | None:
     boxes, _ = detector.detect(image)
-    if boxes is None or len(boxes) == 0:
+    if boxes is None:
         return None
 
     x1, y1, x2, y2 = boxes[0]
     width, height = image.size
-    x1 = max(int(x1) - margin, 0)
-    y1 = max(int(y1) - margin, 0)
-    x2 = min(int(x2) + margin, width)
-    y2 = min(int(y2) + margin, height)
-    if x2 <= x1 or y2 <= y1:
-        return None
+    x1 = max(0, int(x1) - margin)
+    y1 = max(0, int(y1) - margin)
+    x2 = min(width, int(x2) + margin)
+    y2 = min(height, int(y2) + margin)
     return image.crop((x1, y1, x2, y2))
 
 
-def extract_faces_from_video(job: FrameExtractionJob, detector=None) -> list[ExtractedFaceSample]:
-    detector = detector or _ensure_mtcnn()
-    capture, cv2 = _open_video(job.video_path)
+def extract_faces_from_video(video_path: Path, spec: DatasetSpec, detector: MTCNN) -> list[dict]:
+    capture = cv2.VideoCapture(str(video_path))
     total_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
-    sampled_indices = set(_sample_frame_indices(total_frames, job.frames_per_video))
-    video_id = _infer_video_id(job.video_path)
+    frame_indices = set(sample_frame_indices(total_frames, spec.frames_per_video))
+    label = get_label(spec.name, video_path)
+    video_id = video_path.stem
+    save_dir = get_processed_root(spec) / spec.split / ("fake" if label == 1 else "real")
+    save_dir.mkdir(parents=True, exist_ok=True)
 
-    job.output_dir.mkdir(parents=True, exist_ok=True)
-    samples: list[ExtractedFaceSample] = []
-    frame_index = 0
+    samples = []
+    frame_idx = 0
 
     while True:
-        success, frame = capture.read()
-        if not success:
+        ok, frame = capture.read()
+        if not ok:
             break
-        if frame_index not in sampled_indices:
-            frame_index += 1
+
+        if frame_idx not in frame_indices:
+            frame_idx += 1
             continue
 
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        image = Image.fromarray(rgb_frame)
-        face = _crop_face(image=image, detector=detector, margin=job.detector_margin)
-        if face is None:
-            frame_index += 1
-            continue
+        image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        face = crop_face(image, detector, spec.detector_margin)
 
-        output_name = f"{video_id}_frame_{frame_index:05d}.png"
-        output_path = job.output_dir / output_name
-        if job.overwrite or not output_path.exists():
-            face.resize((job.image_size, job.image_size), Image.Resampling.BILINEAR).save(output_path)
+        if face is not None:
+            output_path = save_dir / f"{video_id}_frame_{frame_idx:05d}.png"
+            if spec.overwrite_processed or not output_path.exists():
+                face.resize((spec.image_size, spec.image_size)).save(output_path)
 
-        samples.append(
-            ExtractedFaceSample(
-                image_path=str(output_path),
-                label=job.label,
-                dataset_name=job.dataset_name,
-                split=job.split,
-                video_id=video_id,
-                frame_index=frame_index,
-                source_video=str(job.video_path),
+            samples.append(
+                {
+                    "image_path": str(output_path),
+                    "label": label,
+                    "dataset_name": spec.name,
+                    "split": spec.split,
+                    "video_id": video_id,
+                    "frame_index": frame_idx,
+                    "source_video": str(video_path),
+                }
             )
-        )
-        frame_index += 1
+
+        frame_idx += 1
 
     capture.release()
     return samples
 
 
-def _processed_root(spec: DatasetSpec) -> Path:
-    if spec.processed_root is not None:
-        return Path(spec.processed_root)
-    return Path(spec.root) / "processed_faces"
-
-
-def _manifest_path(spec: DatasetSpec) -> Path:
-    if spec.manifest_path is not None:
-        return Path(spec.manifest_path)
-    return _processed_root(spec) / f"{spec.name.lower()}_{spec.split}_manifest.jsonl"
-
-
-def _detect_label_from_path(dataset_name: str, video_path: Path) -> int:
-    normalized_name = dataset_name.lower()
-    normalized_path = str(video_path).lower()
-    if normalized_name in {"celebdf", "celebdf-v2", "celebdfv2"}:
-        return 0 if any(tag in normalized_path for tag in ("celeb-real", "youtube-real", "real")) else 1
-    if normalized_name in {"faceforensics++", "faceforensicspp", "ff++"}:
-        return 0 if "original_sequences" in normalized_path else 1
-    raise ValueError(f"Unsupported dataset name for label inference: {dataset_name}")
-
-
-def _discover_celebdf_videos(spec: DatasetSpec) -> list[Path]:
-    root = Path(spec.root)
-    candidates = [
-        root / spec.split,
-        root,
-    ]
-    video_files: list[Path] = []
-    for candidate in candidates:
-        if candidate.exists():
-            video_files.extend(sorted(candidate.rglob("*.mp4")))
-            video_files.extend(sorted(candidate.rglob("*.avi")))
-    return sorted(set(video_files))
-
-
-def _discover_faceforensics_videos(spec: DatasetSpec) -> list[Path]:
-    root = Path(spec.root)
-    split_root = root / spec.split if (root / spec.split).exists() else root
-    video_files = sorted(split_root.rglob("*.mp4"))
-    return video_files
-
-
-def discover_extraction_jobs(spec: DatasetSpec) -> list[FrameExtractionJob]:
-    normalized_name = spec.name.lower()
-    if normalized_name in {"celebdf", "celebdf-v2", "celebdfv2"}:
-        video_files = _discover_celebdf_videos(spec)
-    elif normalized_name in {"faceforensics++", "faceforensicspp", "ff++"}:
-        video_files = _discover_faceforensics_videos(spec)
-    else:
-        raise ValueError(f"Unsupported dataset: {spec.name}")
-
-    if spec.max_videos is not None:
-        video_files = video_files[: spec.max_videos]
-
-    output_root = _processed_root(spec) / spec.split
-    jobs = [
-        FrameExtractionJob(
-            dataset_name=spec.name,
-            video_path=video_path,
-            output_dir=output_root / ("fake" if _detect_label_from_path(spec.name, video_path) == 1 else "real"),
-            label=_detect_label_from_path(spec.name, video_path),
-            frames_per_video=spec.frames_per_video,
-            split=spec.split,
-            image_size=spec.image_size,
-            detector_name=spec.face_detector,
-            detector_margin=spec.detector_margin,
-            overwrite=spec.overwrite_processed,
-        )
-        for video_path in video_files
-    ]
-    return jobs
-
-
-def write_manifest(samples: Iterable[ExtractedFaceSample], manifest_path: Path) -> None:
+def write_manifest(samples: list[dict], manifest_path: Path) -> None:
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    with manifest_path.open("w", encoding="utf-8") as handle:
+    with open(manifest_path, "w", encoding="utf-8") as handle:
         for sample in samples:
-            handle.write(json.dumps(asdict(sample), ensure_ascii=True) + "\n")
+            handle.write(json.dumps(sample) + "\n")
 
 
 def prepare_dataset_frames(spec: DatasetSpec, device: str | None = None) -> Path:
-    detector = _ensure_mtcnn(device=device)
-    manifest_samples: list[ExtractedFaceSample] = []
-    for job in discover_extraction_jobs(spec):
-        manifest_samples.extend(extract_faces_from_video(job=job, detector=detector))
+    detector = MTCNN(keep_all=False, device=device)
+    video_paths = get_video_paths(spec)
+    all_samples = []
 
-    manifest_path = _manifest_path(spec)
-    write_manifest(manifest_samples, manifest_path)
+    print(f"Found {len(video_paths)} videos")
+
+    for index, video_path in enumerate(video_paths, start=1):
+        samples = extract_faces_from_video(video_path, spec, detector)
+        all_samples.extend(samples)
+
+        if index == 1 or index % 25 == 0 or index == len(video_paths):
+            print(f"[{index}/{len(video_paths)}] {video_path.name} -> {len(samples)} faces")
+
+    manifest_path = get_manifest_path(spec)
+    write_manifest(all_samples, manifest_path)
+
+    print(f"Saved {len(all_samples)} face images")
+    print(f"Manifest: {manifest_path}")
     return manifest_path
+
+
+def split_videos(video_paths: list[Path], train_ratio: float, val_ratio: float, seed: int) -> dict[str, list[Path]]:
+    video_paths = video_paths[:]
+    random.Random(seed).shuffle(video_paths)
+
+    train_size = int(len(video_paths) * train_ratio)
+    val_size = int(len(video_paths) * val_ratio)
+
+    train_videos = video_paths[:train_size]
+    val_videos = video_paths[train_size : train_size + val_size]
+    test_videos = video_paths[train_size + val_size :]
+
+    return {
+        "train": train_videos,
+        "val": val_videos,
+        "test": test_videos,
+    }
+
+
+def prepare_balanced_celebdf(
+    root: str,
+    processed_root: str,
+    frames_per_video: int = 8,
+    image_size: int = 224,
+    detector_margin: int = 24,
+    train_ratio: float = 0.7,
+    val_ratio: float = 0.15,
+    seed: int = 42,
+    device: str | None = None,
+    overwrite: bool = False,
+) -> dict[str, Path]:
+    all_videos = sorted(Path(root).rglob("*.mp4")) + sorted(Path(root).rglob("*.avi"))
+
+    real_videos = [video for video in all_videos if get_label("CelebDF", video) == 0]
+    fake_videos = [video for video in all_videos if get_label("CelebDF", video) == 1]
+
+    random.Random(seed).shuffle(real_videos)
+    random.Random(seed).shuffle(fake_videos)
+
+    target_count = min(len(real_videos), len(fake_videos))
+    real_videos = real_videos[:target_count]
+    fake_videos = fake_videos[:target_count]
+
+    real_splits = split_videos(real_videos, train_ratio=train_ratio, val_ratio=val_ratio, seed=seed)
+    fake_splits = split_videos(fake_videos, train_ratio=train_ratio, val_ratio=val_ratio, seed=seed)
+
+    detector = MTCNN(keep_all=False, device=device)
+    manifest_paths = {}
+
+    for split_name in ["train", "val", "test"]:
+        spec = DatasetSpec(
+            name="CelebDF",
+            root=root,
+            split=split_name,
+            frames_per_video=frames_per_video,
+            image_size=image_size,
+            processed_root=processed_root,
+            detector_margin=detector_margin,
+            overwrite_processed=overwrite,
+        )
+
+        split_videos_list = real_splits[split_name] + fake_splits[split_name]
+        all_samples = []
+
+        print(
+            f"{split_name}: {len(real_splits[split_name])} real videos, "
+            f"{len(fake_splits[split_name])} fake videos"
+        )
+
+        for index, video_path in enumerate(split_videos_list, start=1):
+            samples = extract_faces_from_video(video_path, spec, detector)
+            all_samples.extend(samples)
+            if index == 1 or index % 25 == 0 or index == len(split_videos_list):
+                print(f"[{split_name}] {index}/{len(split_videos_list)} {video_path.name} -> {len(samples)} faces")
+
+        manifest_path = get_manifest_path(spec)
+        write_manifest(all_samples, manifest_path)
+        manifest_paths[split_name] = manifest_path
+
+        print(f"{split_name} done: {len(all_samples)} face images")
+        print(f"{split_name} manifest: {manifest_path}")
+
+    return manifest_paths
