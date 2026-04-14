@@ -16,6 +16,8 @@ class LoRAAuxiliaryOutput:
     router_logits: Tensor
     selected_experts: Tensor
     expert_weights: Tensor
+    importance: Tensor
+    load: Tensor
 
 
 class MoELoRALayer(nn.Module):
@@ -43,7 +45,7 @@ class MoELoRALayer(nn.Module):
             nn.Linear(input_dim, expert.rank, bias=False) for expert in experts
         )
         self.lora_b = nn.ModuleList(
-            nn.Linear(expert.rank, output_dim, bias=False) for expert in experts
+            nn.Linear(expert.rank, output_dim * 3, bias=False) for expert in experts
         )
         self.scaling = [expert.alpha / float(expert.rank) for expert in experts]
         self.dropout = nn.ModuleList(nn.Dropout(expert.dropout) for expert in experts)
@@ -52,7 +54,7 @@ class MoELoRALayer(nn.Module):
             nn.init.zeros_(lora_b.weight)
 
     def forward(self, tokens: Tensor) -> tuple[Tensor, LoRAAuxiliaryOutput]:
-        router_logits, selected_experts, expert_weights = self.gate(tokens)
+        router_logits, selected_experts, expert_weights, load = self.gate(tokens)
 
         expert_outputs = []
         for lora_a, lora_b, scale, dropout in zip(self.lora_a, self.lora_b, self.scaling, self.dropout):
@@ -66,5 +68,7 @@ class MoELoRALayer(nn.Module):
             router_logits=router_logits,
             selected_experts=selected_experts,
             expert_weights=expert_weights,
+            importance=expert_weights.sum(0),
+            load=load,
         )
         return weighted_update, aux

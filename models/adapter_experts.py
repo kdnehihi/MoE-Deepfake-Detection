@@ -59,7 +59,10 @@ class BaseAdapterExpert(nn.Module):
         patch_tokens = self.post_norm(patch_tokens)
         if cls_token is None:
             return patch_tokens
-        cls_delta = torch.zeros_like(cls_token)
+        cls_delta = self.pre_norm(cls_token)
+        cls_delta = self.activation(self.down_proj(cls_delta))
+        cls_delta = self.up_proj(self.activation(cls_delta))
+        cls_delta = self.post_norm(cls_delta)
         return torch.cat([cls_delta, patch_tokens], dim=1)
 
 

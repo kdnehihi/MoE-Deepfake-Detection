@@ -17,9 +17,7 @@ from utils.config import ModelConfig
 
 @dataclass(slots=True)
 class AttentionLoRAAuxiliaryOutput:
-    q: LoRAAuxiliaryOutput
-    k: LoRAAuxiliaryOutput
-    v: LoRAAuxiliaryOutput
+    qkv: LoRAAuxiliaryOutput
 
 
 @dataclass(slots=True)
@@ -45,19 +43,7 @@ class MoETransformerBlock(nn.Module):
         self.frozen_block = frozen_block
         for parameter in self.frozen_block.parameters():
             parameter.requires_grad = False
-        self.attn_lora_q = MoELoRALayer(
-            input_dim=embed_dim,
-            output_dim=embed_dim,
-            experts=config.moe.lora_experts,
-            gating_config=config.gating,
-        )
-        self.attn_lora_k = MoELoRALayer(
-            input_dim=embed_dim,
-            output_dim=embed_dim,
-            experts=config.moe.lora_experts,
-            gating_config=config.gating,
-        )
-        self.attn_lora_v = MoELoRALayer(
+        self.attn_lora = MoELoRALayer(
             input_dim=embed_dim,
             output_dim=embed_dim,
             experts=config.moe.lora_experts,
@@ -96,13 +82,13 @@ class MoETransformerBlock(nn.Module):
         qkv = qkv.view(batch_size, num_tokens, 3, num_heads, head_dim).permute(2, 0, 3, 1, 4)
         query, key, value = qkv.unbind(dim=0)
 
-        q_delta, q_aux = self.attn_lora_q(normed_tokens)
-        k_delta, k_aux = self.attn_lora_k(normed_tokens)
-        v_delta, v_aux = self.attn_lora_v(normed_tokens)
+        qkv_delta, lora_aux = self.attn_lora(normed_tokens)
+        qkv_delta = qkv_delta.view(batch_size, num_tokens, 3, num_heads, head_dim).permute(2, 0, 3, 1, 4)
+        q_delta, k_delta, v_delta = qkv_delta.unbind(dim=0)
 
-        query = query + q_delta.view(batch_size, num_tokens, num_heads, head_dim).permute(0, 2, 1, 3)
-        key = key + k_delta.view(batch_size, num_tokens, num_heads, head_dim).permute(0, 2, 1, 3)
-        value = value + v_delta.view(batch_size, num_tokens, num_heads, head_dim).permute(0, 2, 1, 3)
+        query = query + q_delta
+        key = key + k_delta
+        value = value + v_delta
 
         scores = (query @ key.transpose(-2, -1)) * attention.scale
         attention_probs = scores.softmax(dim=-1)
@@ -117,7 +103,7 @@ class MoETransformerBlock(nn.Module):
         if proj_drop is not None:
             context = proj_drop(context)
 
-        lora_aux = AttentionLoRAAuxiliaryOutput(q=q_aux, k=k_aux, v=v_aux)
+        lora_aux = AttentionLoRAAuxiliaryOutput(qkv=lora_aux)
         return context, lora_aux
 
     def forward(self, tokens: Tensor) -> tuple[Tensor, BlockAuxiliaryOutput]:

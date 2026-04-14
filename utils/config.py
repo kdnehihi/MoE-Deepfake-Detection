@@ -38,6 +38,8 @@ class GatingConfig:
     hidden_dim: int = 256
     top_k: int = 1
     use_cls_token: bool = True
+    noisy_gating: bool = True
+    noise_epsilon: float = 1e-2
 
 
 @dataclass(slots=True)

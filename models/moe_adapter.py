@@ -17,6 +17,8 @@ class AdapterAuxiliaryOutput:
     router_logits: Tensor
     selected_experts: Tensor
     expert_weights: Tensor
+    importance: Tensor
+    load: Tensor
 
 
 class MoEAdapterLayer(nn.Module):
@@ -47,7 +49,7 @@ class MoEAdapterLayer(nn.Module):
         return expert_cls(input_dim=input_dim, config=config)
 
     def forward(self, tokens: Tensor, spatial_shape: tuple[int, int]) -> tuple[Tensor, AdapterAuxiliaryOutput]:
-        router_logits, selected_experts, expert_weights = self.gate(tokens)
+        router_logits, selected_experts, expert_weights, load = self.gate(tokens)
 
         expert_outputs = [expert(tokens, spatial_shape) for expert in self.experts]
         stacked_outputs = torch.stack(expert_outputs, dim=1)
@@ -57,5 +59,7 @@ class MoEAdapterLayer(nn.Module):
             router_logits=router_logits,
             selected_experts=selected_experts,
             expert_weights=expert_weights,
+            importance=expert_weights.sum(0),
+            load=load,
         )
         return weighted_output, aux
