@@ -3,8 +3,17 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
+import torch
+from torch.utils.data import DataLoader
+
+from data.dataset import build_dataset
+from engine.loss import MoEFFDLoss
+from engine.train import Trainer
+from models.model import MoEFFDDetector
 from utils.config import DatasetSpec, load_config
+from utils.config import ModelConfig, OptimizerConfig, TrainConfig
 
 
 def parse_args() -> argparse.Namespace:
@@ -60,6 +69,19 @@ def parse_args() -> argparse.Namespace:
 
     config_parser = subparsers.add_parser("show-config", help="Load and validate a YAML experiment config.")
     config_parser.add_argument("--config", type=str, required=True, help="Path to the YAML experiment config.")
+
+    train_parser = subparsers.add_parser("train-celebdf", help="Train on preprocessed CelebDF splits.")
+    train_parser.add_argument(
+        "--processed-root",
+        type=str,
+        default="data/processed/celebdf",
+        help="Directory containing processed CelebDF train/val/test data and manifests.",
+    )
+    train_parser.add_argument("--batch-size", type=int, default=16, help="Training batch size.")
+    train_parser.add_argument("--epochs", type=int, default=10, help="Number of training epochs.")
+    train_parser.add_argument("--num-workers", type=int, default=4, help="DataLoader workers.")
+    train_parser.add_argument("--image-size", type=int, default=224, help="Input image size.")
+    train_parser.add_argument("--device", type=str, default=None, help="Device, e.g. cpu or cuda:0.")
     return parser.parse_args()
 
 
@@ -103,6 +125,74 @@ def main() -> None:
     if args.command == "show-config":
         load_config(args.config)
         print(f"Config loaded successfully: {args.config}")
+        return
+
+    if args.command == "train-celebdf":
+        device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
+
+        train_spec = DatasetSpec(
+            name="CelebDF",
+            root=args.processed_root,
+            split="train",
+            image_size=args.image_size,
+            processed_root=args.processed_root,
+        )
+        val_spec = DatasetSpec(
+            name="CelebDF",
+            root=args.processed_root,
+            split="val",
+            image_size=args.image_size,
+            processed_root=args.processed_root,
+        )
+
+        train_dataset = build_dataset(train_spec)
+        val_dataset = build_dataset(val_spec)
+
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=args.batch_size,
+            shuffle=True,
+            num_workers=args.num_workers,
+        )
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=args.num_workers,
+        )
+
+        model_config = ModelConfig()
+        optimizer_config = OptimizerConfig()
+        train_config = TrainConfig(
+            batch_size=args.batch_size,
+            epochs=args.epochs,
+            num_workers=args.num_workers,
+            amp=True,
+        )
+
+        model = MoEFFDDetector(model_config).to(device)
+        criterion = MoEFFDLoss(load_balance_weight=model_config.moe.load_balance_weight)
+        trainer = Trainer(
+            model=model,
+            train_loader=train_loader,
+            criterion=criterion,
+            train_config=train_config,
+            optimizer_config=optimizer_config,
+        )
+        history = trainer.fit(val_loader=val_loader)
+
+        output_dir = Path("outputs")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        checkpoint_path = output_dir / "moeffd_celebdf_last.pt"
+        torch.save(
+            {
+                "model_state_dict": model.state_dict(),
+                "history": history,
+                "model_config": model_config,
+            },
+            checkpoint_path,
+        )
+        print(f"Saved checkpoint to: {checkpoint_path}")
         return
 
     raise ValueError(f"Unsupported command: {args.command}")

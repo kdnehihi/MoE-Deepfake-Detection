@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
+from engine.eval import Evaluator
 from engine.loss import MoEFFDLoss
 from utils.config import OptimizerConfig, TrainConfig
 
@@ -34,10 +36,122 @@ class Trainer:
         self.train_config = train_config
         self.optimizer_config = optimizer_config
         self.state = TrainerState()
+        self.device = str(next(model.parameters()).device)
+        self.optimizer = self.build_optimizer()
+        self.use_amp = train_config.amp and self.device.startswith("cuda")
+        self.autocast_device = "cuda" if self.device.startswith("cuda") else "cpu"
+        self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
 
     def build_optimizer(self):
-        raise NotImplementedError("Trainer.build_optimizer is implemented in Step 5.")
+        gating_parameters = []
+        base_parameters = []
+
+        for name, parameter in self.model.named_parameters():
+            if not parameter.requires_grad:
+                continue
+            if "gate" in name or "w_gate" in name or "w_noise" in name:
+                gating_parameters.append(parameter)
+            else:
+                base_parameters.append(parameter)
+
+        param_groups = []
+        if gating_parameters:
+            param_groups.append(
+                {
+                    "params": gating_parameters,
+                    "lr": self.optimizer_config.lr_gating,
+                    "weight_decay": self.optimizer_config.weight_decay,
+                }
+            )
+        if base_parameters:
+            param_groups.append(
+                {
+                    "params": base_parameters,
+                    "lr": self.optimizer_config.lr_base,
+                    "weight_decay": self.optimizer_config.weight_decay,
+                }
+            )
+
+        return torch.optim.Adam(param_groups)
 
     def train_epoch(self):
-        raise NotImplementedError("Trainer.train_epoch is implemented in Step 5.")
+        self.model.train()
+        total_loss = 0.0
+        total_classification = 0.0
+        total_load_balance = 0.0
+        total_correct = 0
+        total_examples = 0
+        num_batches = 0
 
+        for images, labels in self.train_loader:
+            images = images.to(self.device)
+            labels = labels.to(self.device)
+
+            self.optimizer.zero_grad(set_to_none=True)
+
+            with torch.autocast(device_type=self.autocast_device, enabled=self.use_amp):
+                logits, aux = self.model(images)
+                loss_output = self.criterion(logits, labels, aux)
+
+            if self.use_amp:
+                self.scaler.scale(loss_output.total).backward()
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                loss_output.total.backward()
+                self.optimizer.step()
+
+            predictions = logits.argmax(dim=1)
+            total_correct += (predictions == labels).sum().item()
+            total_examples += labels.size(0)
+
+            total_loss += loss_output.total.item()
+            total_classification += loss_output.classification.item()
+            total_load_balance += loss_output.load_balance.item()
+            num_batches += 1
+            self.state.global_step += 1
+
+        if num_batches == 0:
+            return {
+                "loss": 0.0,
+                "classification_loss": 0.0,
+                "load_balance_loss": 0.0,
+                "accuracy": 0.0,
+            }
+
+        return {
+            "loss": total_loss / num_batches,
+            "classification_loss": total_classification / num_batches,
+            "load_balance_loss": total_load_balance / num_batches,
+            "accuracy": total_correct / max(total_examples, 1),
+        }
+
+    def fit(self, val_loader: DataLoader | None = None):
+        history = []
+        evaluator = None
+        if val_loader is not None:
+            evaluator = Evaluator(self.model, val_loader, self.criterion, self.device)
+
+        for epoch in range(self.train_config.epochs):
+            self.state.epoch = epoch + 1
+            train_stats = self.train_epoch()
+            record = {"epoch": self.state.epoch, "train": train_stats}
+
+            print(
+                f"Epoch {self.state.epoch}/{self.train_config.epochs} | "
+                f"train_loss={train_stats['loss']:.4f} | train_acc={train_stats['accuracy']:.4f}"
+            )
+
+            if evaluator is not None:
+                val_stats = evaluator.evaluate()
+                record["val"] = val_stats
+                print(
+                    f"Epoch {self.state.epoch}/{self.train_config.epochs} | "
+                    f"val_loss={val_stats['loss']:.4f} | "
+                    f"val_acc={val_stats['metrics'].accuracy:.4f} | "
+                    f"val_auc={val_stats['metrics'].auc:.4f}"
+                )
+
+            history.append(record)
+
+        return history

@@ -106,23 +106,121 @@ class DepthwiseConvAdapterExpert(BaseAdapterExpert):
         return padded[:, :, start_y:end_y, start_x:end_x]
 
 
-class VanillaConvExpert(DepthwiseConvAdapterExpert):
-    expert_name = "vanilla_conv"
+class Conv3x3Expert(DepthwiseConvAdapterExpert):
+    expert_name = "conv3x3"
 
     def _apply_local_operator(self, features: Tensor) -> Tensor:
         features = self.depthwise(features)
         return self._post_process(features)
 
 
-class ADCExpert(DepthwiseConvAdapterExpert):
-    expert_name = "adc"
+class Conv5x5Expert(BaseAdapterExpert):
+    expert_name = "conv5x5"
+
+    def __init__(self, input_dim: int, config: AdapterExpertConfig) -> None:
+        super().__init__(input_dim=input_dim, config=config)
+        self.conv = nn.Conv2d(
+            config.bottleneck_dim,
+            config.bottleneck_dim,
+            kernel_size=5,
+            padding=2,
+            groups=config.bottleneck_dim,
+            bias=False,
+        )
+        self.pointwise = nn.Conv2d(config.bottleneck_dim, config.bottleneck_dim, kernel_size=1, bias=False)
+        self.bn = nn.BatchNorm2d(config.bottleneck_dim)
 
     def _apply_local_operator(self, features: Tensor) -> Tensor:
-        base = self.depthwise(features)
-        horizontal = self._shift(base, 0, 1) - self._shift(base, 0, -1)
-        vertical = self._shift(base, 1, 0) - self._shift(base, -1, 0)
-        angular = 0.5 * (horizontal + vertical)
-        return self._post_process(base + angular)
+        out = self.conv(features)
+        out = self.pointwise(out)
+        out = self.bn(out)
+        return self.activation(out)
+
+
+class DilatedConvExpert(BaseAdapterExpert):
+    expert_name = "dilated_conv"
+
+    def __init__(self, input_dim: int, config: AdapterExpertConfig) -> None:
+        super().__init__(input_dim=input_dim, config=config)
+        self.conv = nn.Conv2d(
+            config.bottleneck_dim,
+            config.bottleneck_dim,
+            kernel_size=3,
+            padding=2,
+            dilation=2,
+            groups=config.bottleneck_dim,
+            bias=False,
+        )
+        self.pointwise = nn.Conv2d(config.bottleneck_dim, config.bottleneck_dim, kernel_size=1, bias=False)
+        self.bn = nn.BatchNorm2d(config.bottleneck_dim)
+
+    def _apply_local_operator(self, features: Tensor) -> Tensor:
+        out = self.conv(features)
+        out = self.pointwise(out)
+        out = self.bn(out)
+        return self.activation(out)
+
+
+class DepthwiseOnlyExpert(DepthwiseConvAdapterExpert):
+    expert_name = "depthwise_conv"
+
+    def _apply_local_operator(self, features: Tensor) -> Tensor:
+        return self._post_process(self.depthwise(features))
+
+
+class HighPassExpert(BaseAdapterExpert):
+    expert_name = "high_pass"
+
+    def __init__(self, input_dim: int, config: AdapterExpertConfig) -> None:
+        super().__init__(input_dim=input_dim, config=config)
+        kernel = torch.tensor(
+            [[-1.0, -1.0, -1.0], [-1.0, 8.0, -1.0], [-1.0, -1.0, -1.0]],
+            dtype=torch.float32,
+        )
+        kernel = kernel.view(1, 1, 3, 3).repeat(config.bottleneck_dim, 1, 1, 1)
+        self.register_buffer("kernel", kernel)
+        self.pointwise = nn.Conv2d(config.bottleneck_dim, config.bottleneck_dim, kernel_size=1, bias=False)
+        self.bn = nn.BatchNorm2d(config.bottleneck_dim)
+
+    def _apply_local_operator(self, features: Tensor) -> Tensor:
+        out = F.conv2d(features, self.kernel, padding=1, groups=features.size(1))
+        out = self.pointwise(out)
+        out = self.bn(out)
+        return self.activation(out)
+
+
+class LowPassExpert(BaseAdapterExpert):
+    expert_name = "low_pass"
+
+    def __init__(self, input_dim: int, config: AdapterExpertConfig) -> None:
+        super().__init__(input_dim=input_dim, config=config)
+        kernel = torch.ones((3, 3), dtype=torch.float32) / 9.0
+        kernel = kernel.view(1, 1, 3, 3).repeat(config.bottleneck_dim, 1, 1, 1)
+        self.register_buffer("kernel", kernel)
+        self.pointwise = nn.Conv2d(config.bottleneck_dim, config.bottleneck_dim, kernel_size=1, bias=False)
+        self.bn = nn.BatchNorm2d(config.bottleneck_dim)
+
+    def _apply_local_operator(self, features: Tensor) -> Tensor:
+        out = F.conv2d(features, self.kernel, padding=1, groups=features.size(1))
+        out = self.pointwise(out)
+        out = self.bn(out)
+        return self.activation(out)
+
+
+class FFTExpert(BaseAdapterExpert):
+    expert_name = "fft"
+
+    def __init__(self, input_dim: int, config: AdapterExpertConfig) -> None:
+        super().__init__(input_dim=input_dim, config=config)
+        self.pointwise = nn.Conv2d(config.bottleneck_dim, config.bottleneck_dim, kernel_size=1, bias=False)
+        self.bn = nn.BatchNorm2d(config.bottleneck_dim)
+
+    def _apply_local_operator(self, features: Tensor) -> Tensor:
+        freq = torch.fft.fft2(features, norm="ortho")
+        mag = torch.abs(freq)
+        out = self.pointwise(mag)
+        out = self.bn(out)
+        return self.activation(out)
 
 
 class CDCExpert(DepthwiseConvAdapterExpert):
@@ -135,33 +233,13 @@ class CDCExpert(DepthwiseConvAdapterExpert):
         return self._post_process(base - center_response)
 
 
-class RDCExpert(DepthwiseConvAdapterExpert):
-    expert_name = "rdc"
-
-    def _apply_local_operator(self, features: Tensor) -> Tensor:
-        base = self.depthwise(features)
-        radial_context = F.avg_pool2d(features, kernel_size=3, stride=1, padding=1)
-        ring_response = base - radial_context
-        return self._post_process(base + ring_response)
-
-
-class SOCExpert(DepthwiseConvAdapterExpert):
-    expert_name = "soc"
-
-    def _apply_local_operator(self, features: Tensor) -> Tensor:
-        base = self.depthwise(features)
-        left = self._shift(base, 0, -1)
-        right = self._shift(base, 0, 1)
-        up = self._shift(base, -1, 0)
-        down = self._shift(base, 1, 0)
-        second_order = (left + right + up + down) - (4.0 * base)
-        return self._post_process(base + second_order)
-
-
 ADAPTER_EXPERT_REGISTRY = {
-    VanillaConvExpert.expert_name: VanillaConvExpert,
-    ADCExpert.expert_name: ADCExpert,
+    Conv3x3Expert.expert_name: Conv3x3Expert,
+    Conv5x5Expert.expert_name: Conv5x5Expert,
+    DilatedConvExpert.expert_name: DilatedConvExpert,
+    DepthwiseOnlyExpert.expert_name: DepthwiseOnlyExpert,
+    HighPassExpert.expert_name: HighPassExpert,
+    LowPassExpert.expert_name: LowPassExpert,
+    FFTExpert.expert_name: FFTExpert,
     CDCExpert.expert_name: CDCExpert,
-    RDCExpert.expert_name: RDCExpert,
-    SOCExpert.expert_name: SOCExpert,
 }
