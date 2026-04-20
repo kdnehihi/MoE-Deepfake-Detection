@@ -54,15 +54,33 @@ class MoELoRALayer(nn.Module):
             nn.init.zeros_(lora_b.weight)
 
     def forward(self, tokens: Tensor) -> tuple[Tensor, LoRAAuxiliaryOutput]:
-        router_logits, selected_experts, expert_weights, load = self.gate(tokens)
+        router_logits, _, _, load = self.gate(tokens)
+        routing_probs = torch.softmax(router_logits, dim=-1)
+        top1_values, selected_experts = torch.topk(routing_probs, k=1, dim=-1)
 
-        expert_outputs = []
-        for lora_a, lora_b, scale, dropout in zip(self.lora_a, self.lora_b, self.scaling, self.dropout):
-            update = lora_b(lora_a(dropout(tokens))) * scale
-            expert_outputs.append(update)
+        batch_size, num_tokens, _ = tokens.shape
+        weighted_update = torch.zeros(
+            batch_size,
+            num_tokens,
+            self.output_dim * 3,
+            device=tokens.device,
+            dtype=tokens.dtype,
+        )
+        expert_weights = torch.zeros_like(router_logits)
+        expert_weights.scatter_(dim=-1, index=selected_experts, src=top1_values)
 
-        stacked_updates = torch.stack(expert_outputs, dim=1)
-        weighted_update = torch.einsum("be,benc->bnc", expert_weights, stacked_updates)
+        # Sparse Top-1 routing: only execute the selected LoRA expert for each sample.
+        for expert_index, (lora_a, lora_b, scale, dropout) in enumerate(
+            zip(self.lora_a, self.lora_b, self.scaling, self.dropout)
+        ):
+            sample_mask = selected_experts.squeeze(-1) == expert_index
+            if not sample_mask.any():
+                continue
+
+            expert_input = tokens[sample_mask]
+            update = lora_b(lora_a(dropout(expert_input))) * scale
+            update = top1_values[sample_mask].view(-1, 1, 1) * update
+            weighted_update[sample_mask] = update
 
         aux = LoRAAuxiliaryOutput(
             router_logits=router_logits,

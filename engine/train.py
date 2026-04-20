@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
 
 import torch
 from torch import nn
@@ -82,8 +83,10 @@ class Trainer:
         total_correct = 0
         total_examples = 0
         num_batches = 0
+        start_time = time.time()
+        total_batches = len(self.train_loader)
 
-        for images, labels in self.train_loader:
+        for batch_index, (images, labels) in enumerate(self.train_loader, start=1):
             images = images.to(self.device)
             labels = labels.to(self.device)
 
@@ -110,6 +113,19 @@ class Trainer:
             total_load_balance += loss_output.load_balance.item()
             num_batches += 1
             self.state.global_step += 1
+
+            if batch_index == 1 or batch_index % 10 == 0 or batch_index == total_batches:
+                elapsed = time.time() - start_time
+                running_acc = total_correct / max(total_examples, 1)
+                print(
+                    f"Epoch {self.state.epoch}/{self.train_config.epochs} | "
+                    f"batch {batch_index}/{total_batches} | "
+                    f"loss={loss_output.total.item():.4f} | "
+                    f"cls={loss_output.classification.item():.4f} | "
+                    f"lb={loss_output.load_balance.item():.4f} | "
+                    f"acc={running_acc:.4f} | "
+                    f"time={elapsed:.1f}s"
+                )
 
         if num_batches == 0:
             return {

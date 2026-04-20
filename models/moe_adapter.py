@@ -49,11 +49,25 @@ class MoEAdapterLayer(nn.Module):
         return expert_cls(input_dim=input_dim, config=config)
 
     def forward(self, tokens: Tensor, spatial_shape: tuple[int, int]) -> tuple[Tensor, AdapterAuxiliaryOutput]:
-        router_logits, selected_experts, expert_weights, load = self.gate(tokens)
+        router_logits, _, _, load = self.gate(tokens)
+        routing_probs = torch.softmax(router_logits, dim=-1)
+        top1_values, selected_experts = torch.topk(routing_probs, k=1, dim=-1)
 
-        expert_outputs = [expert(tokens, spatial_shape) for expert in self.experts]
-        stacked_outputs = torch.stack(expert_outputs, dim=1)
-        weighted_output = torch.einsum("be,benc->bnc", expert_weights, stacked_outputs)
+        batch_size, num_tokens, hidden_dim = tokens.shape
+        weighted_output = torch.zeros_like(tokens)
+        expert_weights = torch.zeros_like(router_logits)
+        expert_weights.scatter_(dim=-1, index=selected_experts, src=top1_values)
+
+        # Sparse Top-1 routing: only execute the selected expert for each sample.
+        for expert_index, expert in enumerate(self.experts):
+            sample_mask = selected_experts.squeeze(-1) == expert_index
+            if not sample_mask.any():
+                continue
+
+            expert_input = tokens[sample_mask]
+            expert_output = expert(expert_input, spatial_shape)
+            expert_output = top1_values[sample_mask].view(-1, 1, 1) * expert_output
+            weighted_output[sample_mask] = expert_output
 
         aux = AdapterAuxiliaryOutput(
             router_logits=router_logits,
