@@ -67,14 +67,11 @@ class MoEConfig:
     )
     adapter_experts: list[AdapterExpertConfig] = field(
         default_factory=lambda: [
-            AdapterExpertConfig(name="conv3x3", bottleneck_dim=64),
-            AdapterExpertConfig(name="conv5x5", bottleneck_dim=64),
-            AdapterExpertConfig(name="dilated_conv", bottleneck_dim=64),
-            AdapterExpertConfig(name="depthwise_conv", bottleneck_dim=64),
-            AdapterExpertConfig(name="high_pass", bottleneck_dim=64),
-            AdapterExpertConfig(name="low_pass", bottleneck_dim=64),
-            AdapterExpertConfig(name="fft", bottleneck_dim=64),
+            AdapterExpertConfig(name="vanilla_conv", bottleneck_dim=64),
+            AdapterExpertConfig(name="adc", bottleneck_dim=64),
             AdapterExpertConfig(name="cdc", bottleneck_dim=64),
+            AdapterExpertConfig(name="rdc", bottleneck_dim=64),
+            AdapterExpertConfig(name="soc", bottleneck_dim=64),
         ]
     )
     top_k: int = 1
@@ -116,7 +113,7 @@ class OptimizerConfig:
 @dataclass(slots=True)
 class TrainConfig:
     batch_size: int = 16
-    num_workers: int = 4
+    num_workers: int = 2
     epochs: int = 10
     amp: bool = True
     seed: int = 42

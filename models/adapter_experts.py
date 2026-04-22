@@ -106,75 +106,55 @@ class DepthwiseConvAdapterExpert(BaseAdapterExpert):
         return padded[:, :, start_y:end_y, start_x:end_x]
 
 
-class Conv3x3Expert(DepthwiseConvAdapterExpert):
-    expert_name = "conv3x3"
+class VanillaConvExpert(DepthwiseConvAdapterExpert):
+    expert_name = "vanilla_conv"
 
     def _apply_local_operator(self, features: Tensor) -> Tensor:
         features = self.depthwise(features)
         return self._post_process(features)
 
 
-class Conv5x5Expert(BaseAdapterExpert):
-    expert_name = "conv5x5"
-
-    def __init__(self, input_dim: int, config: AdapterExpertConfig) -> None:
-        super().__init__(input_dim=input_dim, config=config)
-        self.conv = nn.Conv2d(
-            config.bottleneck_dim,
-            config.bottleneck_dim,
-            kernel_size=5,
-            padding=2,
-            groups=config.bottleneck_dim,
-            bias=False,
-        )
-        self.pointwise = nn.Conv2d(config.bottleneck_dim, config.bottleneck_dim, kernel_size=1, bias=False)
-        self.bn = nn.BatchNorm2d(config.bottleneck_dim)
+class ADCExpert(DepthwiseConvAdapterExpert):
+    expert_name = "adc"
 
     def _apply_local_operator(self, features: Tensor) -> Tensor:
-        out = self.conv(features)
-        out = self.pointwise(out)
-        out = self.bn(out)
-        return self.activation(out)
+        nw = self._shift(features, -1, -1)
+        ne = self._shift(features, -1, 1)
+        sw = self._shift(features, 1, -1)
+        se = self._shift(features, 1, 1)
+        angular_difference = 0.25 * ((nw + se) - (ne + sw))
+        return self._post_process(self.depthwise(features) - angular_difference)
 
 
-class DilatedConvExpert(BaseAdapterExpert):
-    expert_name = "dilated_conv"
-
-    def __init__(self, input_dim: int, config: AdapterExpertConfig) -> None:
-        super().__init__(input_dim=input_dim, config=config)
-        self.conv = nn.Conv2d(
-            config.bottleneck_dim,
-            config.bottleneck_dim,
-            kernel_size=3,
-            padding=2,
-            dilation=2,
-            groups=config.bottleneck_dim,
-            bias=False,
-        )
-        self.pointwise = nn.Conv2d(config.bottleneck_dim, config.bottleneck_dim, kernel_size=1, bias=False)
-        self.bn = nn.BatchNorm2d(config.bottleneck_dim)
+class CDCExpert(DepthwiseConvAdapterExpert):
+    expert_name = "cdc"
 
     def _apply_local_operator(self, features: Tensor) -> Tensor:
-        out = self.conv(features)
-        out = self.pointwise(out)
-        out = self.bn(out)
-        return self.activation(out)
+        base = self.depthwise(features)
+        kernel_sum = self.depthwise.weight.sum(dim=(2, 3), keepdim=True).view(1, -1, 1, 1)
+        center_response = features * kernel_sum
+        return self._post_process(base - center_response)
 
 
-class DepthwiseOnlyExpert(DepthwiseConvAdapterExpert):
-    expert_name = "depthwise_conv"
+class RDCExpert(DepthwiseConvAdapterExpert):
+    expert_name = "rdc"
 
     def _apply_local_operator(self, features: Tensor) -> Tensor:
-        return self._post_process(self.depthwise(features))
+        up = self._shift(features, -1, 0)
+        down = self._shift(features, 1, 0)
+        left = self._shift(features, 0, -1)
+        right = self._shift(features, 0, 1)
+        radial_context = 0.25 * (up + down + left + right)
+        return self._post_process(self.depthwise(features) - radial_context)
 
 
-class HighPassExpert(BaseAdapterExpert):
-    expert_name = "high_pass"
+class SOCExpert(BaseAdapterExpert):
+    expert_name = "soc"
 
     def __init__(self, input_dim: int, config: AdapterExpertConfig) -> None:
         super().__init__(input_dim=input_dim, config=config)
         kernel = torch.tensor(
-            [[-1.0, -1.0, -1.0], [-1.0, 8.0, -1.0], [-1.0, -1.0, -1.0]],
+            [[0.0, 1.0, 0.0], [1.0, -4.0, 1.0], [0.0, 1.0, 0.0]],
             dtype=torch.float32,
         )
         kernel = kernel.view(1, 1, 3, 3).repeat(config.bottleneck_dim, 1, 1, 1)
@@ -189,62 +169,10 @@ class HighPassExpert(BaseAdapterExpert):
         return self.activation(out)
 
 
-class LowPassExpert(BaseAdapterExpert):
-    expert_name = "low_pass"
-
-    def __init__(self, input_dim: int, config: AdapterExpertConfig) -> None:
-        super().__init__(input_dim=input_dim, config=config)
-        kernel = torch.ones((3, 3), dtype=torch.float32) / 9.0
-        kernel = kernel.view(1, 1, 3, 3).repeat(config.bottleneck_dim, 1, 1, 1)
-        self.register_buffer("kernel", kernel)
-        self.pointwise = nn.Conv2d(config.bottleneck_dim, config.bottleneck_dim, kernel_size=1, bias=False)
-        self.bn = nn.BatchNorm2d(config.bottleneck_dim)
-
-    def _apply_local_operator(self, features: Tensor) -> Tensor:
-        out = F.conv2d(features, self.kernel, padding=1, groups=features.size(1))
-        out = self.pointwise(out)
-        out = self.bn(out)
-        return self.activation(out)
-
-
-class FFTExpert(BaseAdapterExpert):
-    expert_name = "fft"
-
-    def __init__(self, input_dim: int, config: AdapterExpertConfig) -> None:
-        super().__init__(input_dim=input_dim, config=config)
-        self.pointwise = nn.Conv2d(config.bottleneck_dim, config.bottleneck_dim, kernel_size=1, bias=False)
-        self.bn = nn.BatchNorm2d(config.bottleneck_dim)
-
-    def _apply_local_operator(self, features: Tensor) -> Tensor:
-        original_dtype = features.dtype
-        if features.device.type == "mps":
-            freq = torch.fft.fft2(features.float().cpu(), norm="ortho")
-            mag = torch.abs(freq).to(features.device, dtype=original_dtype)
-        else:
-            freq = torch.fft.fft2(features.float(), norm="ortho")
-            mag = torch.abs(freq).to(features.device, dtype=original_dtype)
-        out = self.pointwise(mag)
-        out = self.bn(out)
-        return self.activation(out)
-
-
-class CDCExpert(DepthwiseConvAdapterExpert):
-    expert_name = "cdc"
-
-    def _apply_local_operator(self, features: Tensor) -> Tensor:
-        base = self.depthwise(features)
-        kernel_sum = self.depthwise.weight.sum(dim=(2, 3), keepdim=True).view(1, -1, 1, 1)
-        center_response = features * kernel_sum
-        return self._post_process(base - center_response)
-
-
 ADAPTER_EXPERT_REGISTRY = {
-    Conv3x3Expert.expert_name: Conv3x3Expert,
-    Conv5x5Expert.expert_name: Conv5x5Expert,
-    DilatedConvExpert.expert_name: DilatedConvExpert,
-    DepthwiseOnlyExpert.expert_name: DepthwiseOnlyExpert,
-    HighPassExpert.expert_name: HighPassExpert,
-    LowPassExpert.expert_name: LowPassExpert,
-    FFTExpert.expert_name: FFTExpert,
+    VanillaConvExpert.expert_name: VanillaConvExpert,
+    ADCExpert.expert_name: ADCExpert,
     CDCExpert.expert_name: CDCExpert,
+    RDCExpert.expert_name: RDCExpert,
+    SOCExpert.expert_name: SOCExpert,
 }
