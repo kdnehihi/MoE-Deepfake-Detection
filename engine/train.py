@@ -165,7 +165,10 @@ class Trainer:
                     f"Epoch {self.state.epoch}/{self.train_config.epochs} | "
                     f"val_loss={val_stats['loss']:.4f} | "
                     f"val_acc={val_stats['metrics'].accuracy:.4f} | "
-                    f"val_auc={val_stats['metrics'].auc:.4f}"
+                    f"val_auc={val_stats['metrics'].auc:.4f} | "
+                    f"val_eer={val_stats['metrics'].eer:.4f} | "
+                    f"val_video_auc={val_stats['video_metrics'].auc:.4f} | "
+                    f"val_video_eer={val_stats['video_metrics'].eer:.4f}"
                 )
 
             history.append(record)

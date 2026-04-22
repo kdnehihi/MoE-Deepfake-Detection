@@ -16,6 +16,12 @@ from models.model import MoEFFDDetector
 from utils.config import DatasetSpec, ModelConfig, OptimizerConfig, TrainConfig
 
 
+def _average_metric(evaluations: list[dict], field: str, video_level: bool = False) -> float:
+    metric_name = "video_metrics" if video_level else "metrics"
+    values = [float(getattr(evaluation[metric_name], field)) for evaluation in evaluations]
+    return sum(values) / max(len(values), 1)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train baseline clean dataset.")
     parser.add_argument("--dataset-root", type=str, default="data/baseline")
@@ -106,14 +112,38 @@ def main() -> None:
 
     ffpp_eval = Evaluator(model, ffpp_test_loader, criterion, device).evaluate()
     celebdf_eval = Evaluator(model, celebdf_test_loader, criterion, device).evaluate()
+    all_evals = [ffpp_eval, celebdf_eval]
 
     print(
         f"FF++ test | loss={ffpp_eval['loss']:.4f} | "
-        f"acc={ffpp_eval['metrics'].accuracy:.4f} | auc={ffpp_eval['metrics'].auc:.4f}"
+        f"frame_acc={ffpp_eval['metrics'].accuracy:.4f} | "
+        f"frame_auc={ffpp_eval['metrics'].auc:.4f} | "
+        f"frame_ap={ffpp_eval['metrics'].ap:.4f} | "
+        f"frame_eer={ffpp_eval['metrics'].eer:.4f} | "
+        f"video_auc={ffpp_eval['video_metrics'].auc:.4f} | "
+        f"video_ap={ffpp_eval['video_metrics'].ap:.4f} | "
+        f"video_eer={ffpp_eval['video_metrics'].eer:.4f} | "
+        f"frames={ffpp_eval['num_frames']} | videos={ffpp_eval['num_videos']}"
     )
     print(
         f"Celeb-DF test | loss={celebdf_eval['loss']:.4f} | "
-        f"acc={celebdf_eval['metrics'].accuracy:.4f} | auc={celebdf_eval['metrics'].auc:.4f}"
+        f"frame_acc={celebdf_eval['metrics'].accuracy:.4f} | "
+        f"frame_auc={celebdf_eval['metrics'].auc:.4f} | "
+        f"frame_ap={celebdf_eval['metrics'].ap:.4f} | "
+        f"frame_eer={celebdf_eval['metrics'].eer:.4f} | "
+        f"video_auc={celebdf_eval['video_metrics'].auc:.4f} | "
+        f"video_ap={celebdf_eval['video_metrics'].ap:.4f} | "
+        f"video_eer={celebdf_eval['video_metrics'].eer:.4f} | "
+        f"frames={celebdf_eval['num_frames']} | videos={celebdf_eval['num_videos']}"
+    )
+    print(
+        "AVG test | "
+        f"frame_auc={_average_metric(all_evals, 'auc'):.4f} | "
+        f"frame_ap={_average_metric(all_evals, 'ap'):.4f} | "
+        f"frame_eer={_average_metric(all_evals, 'eer'):.4f} | "
+        f"video_auc={_average_metric(all_evals, 'auc', video_level=True):.4f} | "
+        f"video_ap={_average_metric(all_evals, 'ap', video_level=True):.4f} | "
+        f"video_eer={_average_metric(all_evals, 'eer', video_level=True):.4f}"
     )
 
     output_dir = Path(args.output_dir)
