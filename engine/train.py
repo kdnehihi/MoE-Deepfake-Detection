@@ -163,15 +163,24 @@ class Trainer:
             if evaluator is not None:
                 val_stats = evaluator.evaluate()
                 record["val"] = val_stats
-                print(
-                    f"Epoch {self.state.epoch}/{self.train_config.epochs} | "
-                    f"val_loss={val_stats['loss']:.4f} | "
-                    f"val_acc={val_stats['metrics'].accuracy:.4f} | "
-                    f"val_auc={val_stats['metrics'].auc:.4f} | "
-                    f"val_eer={val_stats['metrics'].eer:.4f} | "
-                    f"val_video_auc={val_stats['video_metrics'].auc:.4f} | "
-                    f"val_video_eer={val_stats['video_metrics'].eer:.4f}"
-                )
+                video_metrics = val_stats.get("video_metrics")
+                if video_metrics is None:
+                    print(
+                        f"Epoch {self.state.epoch}/{self.train_config.epochs} | "
+                        f"val_loss={val_stats['loss']:.4f} | "
+                        f"val_acc={val_stats['metrics'].accuracy:.4f} | "
+                        f"val_auc={val_stats['metrics'].auc:.4f}"
+                    )
+                else:
+                    print(
+                        f"Epoch {self.state.epoch}/{self.train_config.epochs} | "
+                        f"val_loss={val_stats['loss']:.4f} | "
+                        f"val_acc={val_stats['metrics'].accuracy:.4f} | "
+                        f"val_auc={val_stats['metrics'].auc:.4f} | "
+                        f"val_eer={val_stats['metrics'].eer:.4f} | "
+                        f"val_video_auc={video_metrics.auc:.4f} | "
+                        f"val_video_eer={video_metrics.eer:.4f}"
+                    )
 
             if on_epoch_end is not None:
                 on_epoch_end(self.state.epoch, record)
