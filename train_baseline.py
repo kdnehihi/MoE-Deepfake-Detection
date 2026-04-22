@@ -57,6 +57,15 @@ def _print_eval_summary(prefix: str, ffpp_eval: dict, celebdf_eval: dict) -> Non
     )
 
 
+def _print_epoch_auc_summary(prefix: str, ffpp_eval: dict, celebdf_eval: dict) -> None:
+    all_evals = [ffpp_eval, celebdf_eval]
+    print(
+        f"{prefix} "
+        f"frame_auc={_average_metric(all_evals, 'auc'):.4f} | "
+        f"video_auc={_average_metric(all_evals, 'auc', video_level=True):.4f}"
+    )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train baseline clean dataset.")
     parser.add_argument("--dataset-root", type=str, default="data/baseline")
@@ -151,7 +160,7 @@ def main() -> None:
         celebdf_eval = celebdf_evaluator.evaluate()
         record["ffpp_eval"] = ffpp_eval
         record["celebdf_eval"] = celebdf_eval
-        _print_eval_summary(f"Epoch {epoch}/{args.epochs} |", ffpp_eval, celebdf_eval)
+        _print_epoch_auc_summary(f"Epoch {epoch}/{args.epochs} | test", ffpp_eval, celebdf_eval)
 
     trainer.on_epoch_end = on_epoch_end
     history = trainer.fit()
