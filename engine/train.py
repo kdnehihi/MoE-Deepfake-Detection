@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 import time
 
@@ -147,6 +148,7 @@ class Trainer:
         evaluator = None
         if val_loader is not None:
             evaluator = Evaluator(self.model, val_loader, self.criterion, self.device)
+        on_epoch_end: Callable[[int, dict], None] | None = getattr(self, "on_epoch_end", None)
 
         for epoch in range(self.train_config.epochs):
             self.state.epoch = epoch + 1
@@ -170,6 +172,9 @@ class Trainer:
                     f"val_video_auc={val_stats['video_metrics'].auc:.4f} | "
                     f"val_video_eer={val_stats['video_metrics'].eer:.4f}"
                 )
+
+            if on_epoch_end is not None:
+                on_epoch_end(self.state.epoch, record)
 
             history.append(record)
 
