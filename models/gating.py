@@ -1,88 +1,65 @@
-"""Top-k gating module used by the LoRA and adapter expert mixtures."""
+"""Sparse dispatch helper matching the paper-style MoE routing logic."""
 
 from __future__ import annotations
 
+import numpy as np
 import torch
-from torch.distributions.normal import Normal
-from torch import Tensor, nn
-
-from utils.config import GatingConfig
+from torch import Tensor
 
 
-class TopKGating(nn.Module):
+class SparseDispatcher:
     """
-    Routes each sample to a sparse set of experts.
+    Helper for sparsely-gated MoE execution.
 
-    In the target method, gating consumes pooled transformer features and
-    selects the most relevant expert with top-k routing where k=1.
+    This follows the paper code closely: inputs are dispatched only to experts
+    whose gates are non-zero, and expert outputs are stitched back together via
+    `index_add`.
     """
 
-    def __init__(self, input_dim: int, num_experts: int, config: GatingConfig) -> None:
-        super().__init__()
-        self.input_dim = input_dim
-        self.num_experts = num_experts
-        self.config = config
-        self.w_gate = nn.Parameter(torch.zeros(input_dim, num_experts))
-        self.w_noise = nn.Parameter(torch.zeros(input_dim, num_experts))
-        self.softplus = nn.Softplus()
-        self.softmax = nn.Softmax(dim=1)
-        self.normal = Normal(0.0, 1.0)
+    def __init__(self, num_experts: int, gates: Tensor) -> None:
+        self._gates = gates
+        self._num_experts = num_experts
 
-    def _pool_tokens(self, tokens: Tensor) -> Tensor:
-        if tokens.ndim == 2:
-            return tokens
-        if self.config.use_cls_token:
-            return tokens[:, 0]
-        return tokens.mean(dim=1)
+        nonzero_gates = torch.nonzero(gates, as_tuple=False)
+        if nonzero_gates.numel() == 0:
+            self._expert_index = gates.new_zeros((0, 1), dtype=torch.long)
+            self._batch_index = gates.new_zeros((0,), dtype=torch.long)
+            self._part_sizes = [0 for _ in range(num_experts)]
+            self._nonzero_gates = gates.new_zeros((0, 1))
+            return
 
-    @staticmethod
-    def _gates_to_load(gates: Tensor) -> Tensor:
-        return (gates > 0).sum(0)
+        sorted_experts, index_sorted_experts = nonzero_gates.sort(0)
+        _, self._expert_index = sorted_experts.split(1, dim=1)
+        self._batch_index = nonzero_gates[index_sorted_experts[:, 1], 0]
+        self._part_sizes = (gates > 0).sum(0).tolist()
+        gates_expanded = gates[self._batch_index.flatten()]
+        self._nonzero_gates = torch.gather(gates_expanded, 1, self._expert_index)
 
-    def _prob_in_top_k(
-        self,
-        clean_values: Tensor,
-        noisy_values: Tensor,
-        noise_stddev: Tensor,
-        noisy_top_values: Tensor,
-    ) -> Tensor:
-        batch_size = clean_values.size(0)
-        m = noisy_top_values.size(1)
-        top_values_flat = noisy_top_values.flatten()
+    def dispatch(self, inputs: Tensor) -> tuple[Tensor, ...]:
+        if self._batch_index.numel() == 0:
+            return tuple(inputs.new_empty((0, *inputs.shape[1:])) for _ in range(self._num_experts))
+        dispatched = inputs[self._batch_index]
+        if dispatched.ndim > 1:
+            dispatched = dispatched.squeeze(1)
+        return torch.split(dispatched, self._part_sizes, dim=0)
 
-        threshold_positions_if_in = torch.arange(batch_size, device=clean_values.device) * m + self.config.top_k
-        threshold_if_in = torch.gather(top_values_flat, 0, threshold_positions_if_in).unsqueeze(1)
-        is_in = noisy_values > threshold_if_in
+    def combine(self, expert_outputs: list[Tensor], multiply_by_gates: bool = False) -> Tensor:
+        if not expert_outputs:
+            raise ValueError("expert_outputs must not be empty when combining dispatched outputs.")
 
-        threshold_positions_if_out = threshold_positions_if_in - 1
-        threshold_if_out = torch.gather(top_values_flat, 0, threshold_positions_if_out).unsqueeze(1)
+        stitched = torch.cat(expert_outputs, dim=0).exp()
+        if multiply_by_gates:
+            stitched = stitched.mul(self._nonzero_gates)
 
-        prob_if_in = self.normal.cdf((clean_values - threshold_if_in) / noise_stddev)
-        prob_if_out = self.normal.cdf((clean_values - threshold_if_out) / noise_stddev)
-        return torch.where(is_in, prob_if_in, prob_if_out)
+        zeros = torch.zeros(
+            self._gates.size(0),
+            expert_outputs[-1].size(1),
+            requires_grad=True,
+            device=stitched.device,
+        )
+        combined = zeros.index_add(0, self._batch_index, stitched.float())
+        combined[combined == 0] = np.finfo(float).eps
+        return combined.log()
 
-    def forward(self, tokens: Tensor) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-        pooled = self._pool_tokens(tokens)
-        clean_logits = pooled @ self.w_gate
-        if self.config.noisy_gating and self.training:
-            raw_noise_stddev = pooled @ self.w_noise
-            noise_stddev = self.softplus(raw_noise_stddev) + self.config.noise_epsilon
-            router_logits = clean_logits + (torch.randn_like(clean_logits) * noise_stddev)
-        else:
-            noise_stddev = None
-            router_logits = clean_logits
-
-        top_k = min(self.config.top_k, self.num_experts)
-        topk_logits, selected_experts = torch.topk(router_logits, k=top_k, dim=-1)
-        topk_weights = self.softmax(topk_logits)
-
-        expert_weights = torch.zeros_like(router_logits)
-        expert_weights.scatter_(dim=-1, index=selected_experts, src=topk_weights)
-
-        if self.config.noisy_gating and self.training and top_k < self.num_experts and noise_stddev is not None:
-            top_logits, _ = torch.topk(router_logits, k=min(top_k + 1, self.num_experts), dim=-1)
-            load = self._prob_in_top_k(clean_logits, router_logits, noise_stddev, top_logits).sum(0)
-        else:
-            load = self._gates_to_load(expert_weights).to(router_logits.dtype)
-
-        return router_logits, selected_experts, expert_weights, load
+    def expert_to_gates(self) -> tuple[Tensor, ...]:
+        return torch.split(self._nonzero_gates, self._part_sizes, dim=0)

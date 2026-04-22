@@ -80,7 +80,7 @@ class MoEConfig:
         ]
     )
     top_k: int = 1
-    load_balance_weight: float = 0.01
+    load_balance_weight: float = 1.0
     lora_balance_scale: float = 200.0
     adapter_balance_scale: float = 1.0
 

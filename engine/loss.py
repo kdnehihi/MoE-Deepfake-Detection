@@ -37,7 +37,7 @@ class MoEFFDLoss(nn.Module):
         eps = 1e-10
         if values.numel() <= 1:
             return torch.zeros(1, device=values.device, dtype=values.dtype).squeeze(0)
-        return values.float().var(unbiased=False) / (values.float().mean().pow(2) + eps)
+        return values.float().var() / (values.float().mean().pow(2) + eps)
 
     def forward(self, logits: Tensor, labels: Tensor, aux: ModelAuxiliaryOutput) -> LossOutput:
         classification = F.cross_entropy(logits, labels)

@@ -12,6 +12,8 @@ The current model design uses:
 - MoE routing for expert specialization
 - a binary classifier for `real` vs `fake`
 
+The current baseline/model path is now aligned as closely as possible to the public paper code while preserving this repository's higher-level pipeline.
+
 The codebase now supports two parallel experiment tracks:
 
 1. a reproducible **clean baseline**
@@ -46,7 +48,7 @@ Important:
 - Celeb-DF is not used in baseline training
 - no SBI
 - no staged curriculum
-- same MoE-FFD-style architecture, pulled closer to the paper
+- same MoE-FFD-style architecture, with the core MoE logic now matched closely to the public paper code
 - frozen ViT backbone
 - paper-like video evaluation during validation and testing
 
@@ -55,6 +57,35 @@ Important:
 - validation uses FF++ videos
 - `FF++` remains the in-domain test
 - `Celeb-DF` remains the out-of-domain test
+
+### Core model logic
+
+The current implementation keeps the repo pipeline, but the model internals now follow the paper logic closely:
+
+- `ViT-B/16` ImageNet-21k backbone
+- frozen pretrained transformer blocks
+- LoRA MoE on attention `qkv`
+- adapter MoE after the MLP branch
+- top-`k` noisy gating with `k = 1`
+- token-level LoRA routing
+- mean-token adapter routing
+- `SparseDispatcher`-style sparse dispatch / combine
+- load-balancing based on `cv_squared(importance) + cv_squared(load)`
+- total training objective:
+  - `cross_entropy + 1 * (200 * lora_balance + 1 * adapter_balance)`
+
+Default expert layout:
+
+- LoRA experts with ranks:
+  - `8, 16, 32, 48, 64, 96, 128`
+- Adapter experts:
+  - `cv`
+  - `cd`
+  - `ad`
+  - `rd`
+  - `scd`
+- Adapter bottleneck:
+  - `8`
 
 ## Staged Training Mode
 
@@ -251,6 +282,8 @@ python -u train_baseline.py \
 ```
 
 If VRAM is tight, reduce `--batch-size` to `16`.
+
+If you want quicker iteration while keeping the same protocol, reduce `--epochs` first before changing the data design.
 
 Video-style validation and testing use the extracted frames already present in each manifest. With the current processed data, that is typically about `8` frames per video.
 
