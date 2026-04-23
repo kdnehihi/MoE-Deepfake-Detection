@@ -45,6 +45,9 @@ class Trainer:
         self.autocast_device = "cuda" if self.device.startswith("cuda") else "cpu"
         self.scaler = torch.amp.GradScaler("cuda", enabled=self.use_amp)
         self.moe_log_interval = 100
+        model_config = getattr(self.model, "config", None)
+        stage_config = getattr(model_config, "stage", None)
+        self.enable_moe_logging = bool(getattr(stage_config, "enable_moe_router", True))
 
     def build_optimizer(self):
         gating_parameters = []
@@ -179,7 +182,9 @@ class Trainer:
                     f"acc={running_acc:.4f} | "
                     f"time={elapsed:.1f}s"
                 )
-            if batch_index == 1 or batch_index % self.moe_log_interval == 0 or batch_index == total_batches:
+            if self.enable_moe_logging and (
+                batch_index == 1 or batch_index % self.moe_log_interval == 0 or batch_index == total_batches
+            ):
                 self._print_moe_usage(
                     aux,
                     prefix=(
