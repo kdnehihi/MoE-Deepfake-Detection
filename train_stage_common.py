@@ -46,6 +46,7 @@ def run_stage_training(
     image_size: int,
     device: str,
     init_checkpoint: str | None = None,
+    output_dir: str = "outputs",
 ) -> None:
     dataset_path = Path(dataset_root)
     train_loader = build_loader(dataset_path, "train_manifest.jsonl", "train", image_size, batch_size, num_workers, True)
@@ -78,9 +79,9 @@ def run_stage_training(
     )
     history = trainer.fit(val_loader=val_loader)
 
-    output_dir = Path("outputs")
-    output_dir.mkdir(parents=True, exist_ok=True)
-    checkpoint_path = output_dir / output_name
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    checkpoint_path = output_path / output_name
     torch.save(
         {
             "model_state_dict": model.state_dict(),

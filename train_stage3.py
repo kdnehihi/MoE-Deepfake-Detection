@@ -18,6 +18,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--image-size", type=int, default=224)
+    parser.add_argument("--output-dir", type=str, default="outputs")
     parser.add_argument("--device", type=str, default=None)
     return parser.parse_args()
 
@@ -35,6 +36,7 @@ def main() -> None:
         image_size=args.image_size,
         device=device,
         init_checkpoint=args.init_checkpoint,
+        output_dir=args.output_dir,
     )
 
 
