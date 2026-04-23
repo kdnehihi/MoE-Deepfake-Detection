@@ -72,9 +72,15 @@ class MoETransformerBlock(nn.Module):
             for parameter in norm1.parameters():
                 parameter.requires_grad = True
         if self.enable_lora and not self.enable_moe_router:
-            self._set_requires_grad(self.attn_lora.gate, False)
+            if hasattr(self.attn_lora, "w_gate"):
+                self.attn_lora.w_gate.requires_grad = False
+            if hasattr(self.attn_lora, "w_noise"):
+                self.attn_lora.w_noise.requires_grad = False
         if self.enable_adapter and not self.enable_moe_router:
-            self._set_requires_grad(self.adapter.gate, False)
+            if hasattr(self.adapter, "w_gate"):
+                self.adapter.w_gate.requires_grad = False
+            if hasattr(self.adapter, "w_noise"):
+                self.adapter.w_noise.requires_grad = False
 
     @staticmethod
     def _drop_path(module: nn.Module | None, tokens: Tensor) -> Tensor:
