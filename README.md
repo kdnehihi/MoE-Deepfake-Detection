@@ -107,13 +107,19 @@ Model:
 
 Data:
 
-- real images
-- SBI-generated fake images
+- `FF++ original` real images only
+- SBI-generated fake images blended from those same `FF++ original` images
 
 Suggested ratio:
 
 - `50% real`
 - `50% SBI fake`
+
+Stage 1 is intentionally aligned with the baseline story:
+
+- training real data comes only from `FF++`
+- `Celeb-DF` is not used in Stage 1 training
+- `Celeb-DF` remains an OOD evaluation target
 
 ### Stage 2: Real Deepfake Adaptation
 
@@ -311,6 +317,12 @@ python data/prepare_stage_datasets.py \
   --ffpp-root data/processed/ffpp_generalization \
   --output-root data/stages/stage1_sbi
 ```
+
+Stage 1 data policy:
+
+- real pool: `FF++ original` only
+- fake pool: SBI / blend samples generated from those same FF++ original frames
+- evaluation: `FF++ test` + `Celeb-DF test`
 
 ### Train Stage 1
 

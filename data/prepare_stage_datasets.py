@@ -47,6 +47,15 @@ def _split_real_pool(celebdf_train: list[dict], ffpp_train: list[dict], val_rati
     return split_by_group(real_pool, val_ratio=val_ratio, seed=seed)
 
 
+def _split_ffpp_original_pool(ffpp_train: list[dict], val_ratio: float, seed: int) -> tuple[list[dict], list[dict]]:
+    ffpp_original = [
+        sample
+        for sample in ffpp_train
+        if int(sample["label"]) == 0 and sample.get("manipulation_type") == "original"
+    ]
+    return split_by_group(ffpp_original, val_ratio=val_ratio, seed=seed, key="source_video")
+
+
 def prepare_stage1(
     celebdf_root: Path,
     ffpp_root: Path,
@@ -56,7 +65,7 @@ def prepare_stage1(
     overwrite: bool,
 ) -> None:
     sources = _load_sources(celebdf_root, ffpp_root)
-    train_real_pool, val_real_pool = _split_real_pool(sources["celebdf_train"], sources["ffpp_train"], val_ratio, seed)
+    train_real_pool, val_real_pool = _split_ffpp_original_pool(sources["ffpp_train"], val_ratio, seed)
 
     train_real = train_real_pool
     val_real = val_real_pool
@@ -83,6 +92,7 @@ def prepare_stage1(
     _materialize_tests(output_root, sources["celebdf_test"], sources["ffpp_test"], overwrite)
 
     print("Prepared stage1 dataset")
+    print("stage1 real source: FF++ original only")
     print("train real:", len(train_real), "train sbi:", len(train_sbi))
     print("val real:", len(val_real), "val sbi:", len(val_sbi))
     print("train SBI manifest:", train_sbi_manifest)
