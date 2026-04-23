@@ -15,6 +15,36 @@ from models.model import MoEFFDDetector
 from utils.config import DatasetSpec, ModelConfig, OptimizerConfig, TrainConfig
 
 
+def _safe_torch_load(path: str | Path, map_location: str = "cpu"):
+    try:
+        return torch.load(path, map_location=map_location, weights_only=False)
+    except TypeError:
+        return torch.load(path, map_location=map_location)
+
+
+def _metric_to_dict(metric) -> dict[str, float] | None:
+    if metric is None:
+        return None
+    return {
+        "accuracy": float(getattr(metric, "accuracy", 0.0)),
+        "auc": float(getattr(metric, "auc", 0.0)),
+        "ap": float(getattr(metric, "ap", 0.0)),
+        "eer": float(getattr(metric, "eer", 0.0)),
+    }
+
+
+def _evaluation_to_dict(evaluation: dict) -> dict:
+    return {
+        "loss": float(evaluation.get("loss", 0.0)),
+        "classification_loss": float(evaluation.get("classification_loss", 0.0)),
+        "load_balance_loss": float(evaluation.get("load_balance_loss", 0.0)),
+        "metrics": _metric_to_dict(evaluation.get("metrics")),
+        "video_metrics": _metric_to_dict(evaluation.get("video_metrics")),
+        "num_frames": int(evaluation.get("num_frames", 0)),
+        "num_videos": int(evaluation.get("num_videos", 0)),
+    }
+
+
 def build_loader(dataset_root: Path, manifest_name: str, split_name: str, image_size: int, batch_size: int, num_workers: int, shuffle: bool) -> DataLoader:
     spec = DatasetSpec(
         name="StageDataset",
@@ -31,7 +61,7 @@ def build_loader(dataset_root: Path, manifest_name: str, split_name: str, image_
 def maybe_load_checkpoint(model: torch.nn.Module, checkpoint_path: str | None) -> None:
     if not checkpoint_path:
         return
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    checkpoint = _safe_torch_load(checkpoint_path, map_location="cpu")
     model.load_state_dict(checkpoint["model_state_dict"], strict=True)
     print(f"Loaded checkpoint: {checkpoint_path}")
 
@@ -111,6 +141,8 @@ def run_stage_training(
             "history": history,
             "ffpp_eval": ffpp_eval,
             "celebdf_eval": celebdf_eval,
+            "ffpp_eval_summary": _evaluation_to_dict(ffpp_eval),
+            "celebdf_eval_summary": _evaluation_to_dict(celebdf_eval),
             "model_config": model_config,
             "init_checkpoint": init_checkpoint,
         },
