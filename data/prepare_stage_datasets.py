@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import random
 import sys
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from data.sbi_generator import generate_sbi_samples
 
 
 FFPP_FAKE_TYPES = {"Deepfakes", "FaceSwap", "Face2Face", "NeuralTextures"}
+FFPP_SUBSETS = ("original", "Deepfakes", "Face2Face", "FaceSwap", "NeuralTextures")
 
 
 def _resolve_image_path(sample: dict, celebdf_root: Path, ffpp_root: Path) -> dict:
@@ -94,6 +96,41 @@ def _split_ffpp_original_pool(ffpp_train: list[dict], val_ratio: float, seed: in
     return split_by_group(ffpp_original, val_ratio=val_ratio, seed=seed, key="source_video")
 
 
+def _split_ffpp_by_subset(ffpp_train: list[dict], val_ratio: float, seed: int) -> tuple[list[dict], list[dict]]:
+    train_samples: list[dict] = []
+    val_samples: list[dict] = []
+    for offset, subset_name in enumerate(FFPP_SUBSETS):
+        subset_samples = [sample for sample in ffpp_train if sample.get("manipulation_type") == subset_name]
+        subset_train, subset_val = split_by_group(
+            subset_samples,
+            val_ratio=val_ratio,
+            seed=seed + offset,
+            key="source_video",
+        )
+        train_samples.extend(subset_train)
+        val_samples.extend(subset_val)
+    return train_samples, val_samples
+
+
+def _balance_ffpp_like_baseline(samples: list[dict], seed: int) -> list[dict]:
+    original_samples = [sample for sample in samples if sample.get("manipulation_type") == "original"]
+    fake_samples = [sample for sample in samples if sample.get("manipulation_type") in FFPP_FAKE_TYPES]
+    if not original_samples or not fake_samples:
+        return samples
+
+    rng = random.Random(seed)
+    repeated_originals = original_samples[:]
+    while len(repeated_originals) < len(fake_samples):
+        shuffled = original_samples[:]
+        rng.shuffle(shuffled)
+        repeated_originals.extend(shuffled)
+
+    balanced_originals = repeated_originals[: len(fake_samples)]
+    balanced_samples = balanced_originals + fake_samples
+    rng.shuffle(balanced_samples)
+    return balanced_samples
+
+
 def prepare_stage1(
     celebdf_root: Path,
     ffpp_root: Path,
@@ -148,71 +185,38 @@ def prepare_stage2(
     sbi_fake_ratio: float = 0.18,
 ) -> None:
     sources = _load_sources(celebdf_root, ffpp_root)
-    train_real_pool, val_real_pool = _split_ffpp_original_pool(sources["ffpp_train"], val_ratio, seed)
+    ffpp_valid_path = ffpp_root / "ffpp_generalization_valid_manifest.jsonl"
+    if ffpp_valid_path.exists():
+        train_samples = [
+            sample for sample in sources["ffpp_train"] if sample.get("manipulation_type") in FFPP_SUBSETS
+        ]
+        valid_samples = [
+            _resolve_image_path(sample, celebdf_root, ffpp_root)
+            for sample in load_manifest(ffpp_valid_path)
+            if sample.get("manipulation_type") in FFPP_SUBSETS
+        ]
+        valid_source = "ffpp_generalization_valid_manifest.jsonl"
+    else:
+        train_samples, valid_samples = _split_ffpp_by_subset(sources["ffpp_train"], val_ratio, seed)
+        valid_source = f"split from FF++ train with val_ratio={val_ratio}"
 
-    ffpp_fake_train, ffpp_fake_val = split_by_group(
-        filter_ffpp_fake_types(sources["ffpp_train"], FFPP_FAKE_TYPES),
-        val_ratio=val_ratio,
-        seed=seed + 1,
-    )
-
-    ratios = {"real": 0.4, "ffpp_fake": ffpp_fake_ratio, "sbi_fake": sbi_fake_ratio}
-
-    train_total = compute_total_target(
-        {"real": len(train_real_pool), "ffpp_fake": len(ffpp_fake_train), "sbi_fake": len(train_real_pool)},
-        ratios,
-    )
-    val_total = compute_total_target(
-        {"real": len(val_real_pool), "ffpp_fake": len(ffpp_fake_val), "sbi_fake": len(val_real_pool)},
-        ratios,
-    )
-
-    train_counts = compute_counts(train_total, ratios)
-    val_counts = compute_counts(val_total, ratios)
-
-    train_real = sample_without_replacement(train_real_pool, train_counts["real"], seed)
-    train_ffpp_fake = sample_without_replacement(ffpp_fake_train, train_counts["ffpp_fake"], seed + 3)
-    train_sbi: list[dict] = []
-    if train_counts["sbi_fake"] > 0:
-        train_sbi_sources = sample_without_replacement(train_real_pool, train_counts["sbi_fake"], seed + 4)
-        train_sbi, _ = generate_sbi_samples(
-            real_samples=train_sbi_sources,
-            count=train_counts["sbi_fake"],
-            output_root=output_root / "_generated_sbi",
-            split_name="train",
-            seed=seed + 5,
-            overwrite=overwrite,
-        )
-
-    val_real = sample_without_replacement(val_real_pool, val_counts["real"], seed + 6)
-    val_ffpp_fake = sample_without_replacement(ffpp_fake_val, val_counts["ffpp_fake"], seed + 7)
-    val_sbi: list[dict] = []
-    if val_counts["sbi_fake"] > 0:
-        val_sbi_sources = sample_without_replacement(val_real_pool, val_counts["sbi_fake"], seed + 8)
-        val_sbi, _ = generate_sbi_samples(
-            real_samples=val_sbi_sources,
-            count=val_counts["sbi_fake"],
-            output_root=output_root / "_generated_sbi",
-            split_name="val",
-            seed=seed + 9,
-            overwrite=overwrite,
-        )
-
-    train_samples = (
-        train_real
-        + train_ffpp_fake
-        + train_sbi
-    )
-    val_samples = val_real + val_ffpp_fake + val_sbi
+    train_samples = _balance_ffpp_like_baseline(train_samples, seed)
+    val_samples = valid_samples
 
     materialize_split(train_samples, output_root / "train", "train_manifest.jsonl", overwrite=overwrite)
     materialize_split(val_samples, output_root / "val", "val_manifest.jsonl", overwrite=overwrite)
     _materialize_tests(output_root, sources["celebdf_test"], sources["ffpp_test"], overwrite)
 
     print("Prepared stage2 dataset")
-    print("train counts:", train_counts)
-    print("val counts:", val_counts)
-    print("stage2 train sources: FF++ original real + FF++ fake + SBI fake")
+    print("stage2 train sources: baseline-aligned FF++ only")
+    print("FF++ valid source:", valid_source)
+    print(
+        "train effective ratio:",
+        f"real={sum(1 for sample in train_samples if int(sample['label']) == 0)}",
+        f"fake={sum(1 for sample in train_samples if int(sample['label']) == 1)}",
+    )
+    print("train samples:", len(train_samples))
+    print("val samples:", len(val_samples))
 
 
 def prepare_stage3(
