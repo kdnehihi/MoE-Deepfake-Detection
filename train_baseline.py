@@ -1,4 +1,4 @@
-"""Train the baseline detector with a paper-like FF++/Celeb-DF protocol."""
+"""Train the baseline detector with a paper-aligned FF++/Celeb-DF protocol."""
 
 from __future__ import annotations
 
@@ -58,7 +58,7 @@ def _print_eval_summary(prefix: str, ffpp_eval: dict, celebdf_eval: dict) -> Non
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train paper-like baseline dataset.")
+    parser = argparse.ArgumentParser(description="Train paper-aligned baseline dataset.")
     parser.add_argument("--dataset-root", type=str, default="data/baseline")
     parser.add_argument("--output-dir", type=str, default="outputs")
     parser.add_argument("--batch-size", type=int, default=32)
@@ -82,11 +82,18 @@ def build_loader(
     max_samples: int | None = None,
     seed: int = 42,
     group_by_video: bool = False,
-    frames_per_video: int = 8,
+    frames_per_video: int | None = None,
 ) -> DataLoader:
     if group_by_video and batch_size != 1:
         print(f"{split_name}: overriding batch_size={batch_size} to 1 for video-style evaluation.")
         batch_size = 1
+    if frames_per_video is None:
+        if split_name in {"val", "test_ffpp"}:
+            frames_per_video = 20
+        elif split_name == "test_celebdf":
+            frames_per_video = 100
+        else:
+            frames_per_video = 8
     spec = DatasetSpec(
         name="Baseline",
         root=str(dataset_root),

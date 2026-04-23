@@ -25,10 +25,10 @@ The baseline must remain runnable and unchanged in spirit even as the staged fra
 
 ### Training policy
 
-Paper-like baseline protocol:
+Paper-aligned baseline protocol:
 
 - Train: `FF++ train`
-- Valid: `FF++ valid`, split from `FF++ train` at video level
+- Valid: `FF++ valid` if a dedicated manifest exists, otherwise split from `FF++ train` at video level
 - Test-1: `FF++ test`
 - Test-2: `Celeb-DF test` as out-of-domain evaluation
 
@@ -45,12 +45,15 @@ Within FF++:
 Important:
 
 - baseline training data remains `100% FF++`
+- train sampling is balanced to match the public code's intent:
+  - `original` is oversampled to match the total of the four fake subsets
+  - effective train ratio is therefore close to `50% real / 50% fake`
 - Celeb-DF is not used in baseline training
 - no SBI
 - no staged curriculum
 - same MoE-FFD-style architecture, with the core MoE logic now matched closely to the public paper code
 - frozen ViT backbone
-- paper-like video evaluation during validation and testing
+- paper-like video evaluation during validation and testing (`20 / 20 / 100` frames when available)
 
 ### Evaluation policy
 
@@ -272,8 +275,8 @@ data/baseline/
 
 Notes:
 
-- `train_manifest.jsonl` and `val_manifest.jsonl` are both built from `FF++ train`
-- validation is split at video level, stratified by manipulation type
+- `train_manifest.jsonl` stays `FF++` only and is balanced so real matches the total fake count
+- `val_manifest.jsonl` uses `FF++ valid` if available, otherwise a video-level split from `FF++ train`
 - `Celeb-DF` only appears in `test_celebdf_manifest.jsonl`
 
 ### 3. Train the clean baseline
