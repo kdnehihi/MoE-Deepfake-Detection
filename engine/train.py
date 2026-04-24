@@ -24,6 +24,18 @@ class TrainerState:
 class Trainer:
     """Encapsulates optimizer, AMP, and epoch orchestration."""
 
+    @staticmethod
+    def _build_grad_scaler(use_amp: bool):
+        amp_module = getattr(torch, "amp", None)
+        if amp_module is not None:
+            grad_scaler = getattr(amp_module, "GradScaler", None)
+            if grad_scaler is not None:
+                try:
+                    return grad_scaler("cuda", enabled=use_amp)
+                except TypeError:
+                    return grad_scaler(enabled=use_amp)
+        return torch.cuda.amp.GradScaler(enabled=use_amp)
+
     def __init__(
         self,
         model: nn.Module,
@@ -43,7 +55,7 @@ class Trainer:
         self.scheduler = self.build_scheduler()
         self.use_amp = train_config.amp and self.device.startswith("cuda")
         self.autocast_device = "cuda" if self.device.startswith("cuda") else "cpu"
-        self.scaler = torch.amp.GradScaler("cuda", enabled=self.use_amp)
+        self.scaler = self._build_grad_scaler(self.use_amp)
         self.moe_log_interval = 100
         model_config = getattr(self.model, "config", None)
         stage_config = getattr(model_config, "stage", None)
