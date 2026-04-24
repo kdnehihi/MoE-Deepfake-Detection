@@ -54,7 +54,14 @@ def _resolve_manifest_image_path(image_path: Path, spec: DatasetSpec) -> Path:
 
     dataset_root = Path(spec.root).resolve()
     processed_root = _processed_root(spec).resolve()
+    data_root = dataset_root.parent if dataset_root.name in {"baseline", "stages"} else dataset_root
     path_parts = image_path.parts
+
+    if path_parts and path_parts[0] == "data":
+        return data_root.joinpath(*path_parts[1:]).resolve()
+
+    if path_parts and path_parts[0] in {"processed", "stages", "baseline"}:
+        return data_root.joinpath(*path_parts).resolve()
 
     if dataset_root.name in path_parts:
         suffix = path_parts[path_parts.index(dataset_root.name) + 1 :]
@@ -120,6 +127,8 @@ def _fallback_stage1_path(path: Path, spec: DatasetSpec) -> Path:
     data_root = dataset_root.parents[1]
     stem_parts = path.stem.split("__")
     label_dir = path.parent.name
+    if label_dir == "FaceToFace":
+        label_dir = "Face2Face"
 
     # Stage 1 real files are materialized under `train/real` or `val/real`, but on Drive those
     # symlinks are often missing. Recover the original processed FF++ frame directly.
@@ -192,6 +201,8 @@ def _fallback_baseline_path(path: Path, spec: DatasetSpec) -> Path:
 
     data_root = dataset_root.parent
     label_dir = path.parent.parent.name if len(path.parents) >= 2 else ""
+    if label_dir == "FaceToFace":
+        label_dir = "Face2Face"
     video_id = path.parent.name
     frame_name = path.name
     split_name = path.parts[-4] if len(path.parts) >= 4 else spec.split
