@@ -72,11 +72,11 @@ class MoEConfig:
     )
     adapter_experts: list[AdapterExpertConfig] = field(
         default_factory=lambda: [
-            AdapterExpertConfig(name="vanilla_conv", bottleneck_dim=8),
-            AdapterExpertConfig(name="adc", bottleneck_dim=8),
-            AdapterExpertConfig(name="cdc", bottleneck_dim=8),
-            AdapterExpertConfig(name="rdc", bottleneck_dim=8),
-            AdapterExpertConfig(name="soc", bottleneck_dim=8),
+            AdapterExpertConfig(name="cv", bottleneck_dim=8),
+            AdapterExpertConfig(name="cd", bottleneck_dim=8),
+            AdapterExpertConfig(name="ad", bottleneck_dim=8),
+            AdapterExpertConfig(name="rd", bottleneck_dim=8),
+            AdapterExpertConfig(name="scd", bottleneck_dim=8),
         ]
     )
     top_k: int = 1

@@ -191,9 +191,14 @@ class SOCExpert(BaseAdapterExpert):
 
 
 ADAPTER_EXPERT_REGISTRY = {
+    "cv": VanillaConvExpert,
     VanillaConvExpert.expert_name: VanillaConvExpert,
+    "ad": ADCExpert,
     ADCExpert.expert_name: ADCExpert,
+    "cd": CDCExpert,
     CDCExpert.expert_name: CDCExpert,
+    "rd": RDCExpert,
     RDCExpert.expert_name: RDCExpert,
+    "scd": SOCExpert,
     SOCExpert.expert_name: SOCExpert,
 }
