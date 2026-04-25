@@ -226,31 +226,37 @@ def prepare_stage3(
     val_ratio: float,
     seed: int,
     overwrite: bool,
-    ffpp_fake_ratio: float = 0.36,
-    celebdf_fake_ratio: float = 0.15,
-    sbi_fake_ratio: float = 0.09,
+    ffpp_fake_ratio: float = 0.45,
+    sbi_fake_ratio: float = 0.15,
+    real_ratio: float = 0.40,
 ) -> None:
     sources = _load_sources(celebdf_root, ffpp_root)
-    train_real_pool, val_real_pool = _split_real_pool(sources["celebdf_train"], sources["ffpp_train"], val_ratio, seed)
+    ffpp_valid_path = ffpp_root / "ffpp_generalization_valid_manifest.jsonl"
+    if ffpp_valid_path.exists():
+        train_samples = [
+            sample for sample in sources["ffpp_train"] if sample.get("manipulation_type") in FFPP_SUBSETS
+        ]
+        valid_samples = [
+            _resolve_image_path(sample, celebdf_root, ffpp_root)
+            for sample in load_manifest(ffpp_valid_path)
+            if sample.get("manipulation_type") in FFPP_SUBSETS
+        ]
+        valid_source = "ffpp_generalization_valid_manifest.jsonl"
+    else:
+        train_samples, valid_samples = _split_ffpp_by_subset(sources["ffpp_train"], val_ratio, seed)
+        valid_source = f"split from FF++ train with val_ratio={val_ratio}"
 
-    ffpp_fake_train, ffpp_fake_val = split_by_group(
-        filter_ffpp_fake_types(sources["ffpp_train"], FFPP_FAKE_TYPES),
-        val_ratio=val_ratio,
-        seed=seed + 1,
-    )
-    celebdf_fake_train, celebdf_fake_val = split_by_group(
-        filter_by_label(sources["celebdf_train"], 1),
-        val_ratio=val_ratio,
-        seed=seed + 2,
-    )
+    train_real_pool = [sample for sample in train_samples if int(sample["label"]) == 0]
+    val_real_pool = [sample for sample in valid_samples if int(sample["label"]) == 0]
+    ffpp_fake_train = [sample for sample in train_samples if int(sample["label"]) == 1]
+    ffpp_fake_val = [sample for sample in valid_samples if int(sample["label"]) == 1]
 
-    ratios = {"real": 0.4, "ffpp_fake": ffpp_fake_ratio, "celebdf_fake": celebdf_fake_ratio, "sbi_fake": sbi_fake_ratio}
+    ratios = {"real": real_ratio, "ffpp_fake": ffpp_fake_ratio, "sbi_fake": sbi_fake_ratio}
 
     train_total = compute_total_target(
         {
             "real": len(train_real_pool),
             "ffpp_fake": len(ffpp_fake_train),
-            "celebdf_fake": len(celebdf_fake_train),
             "sbi_fake": len(train_real_pool),
         },
         ratios,
@@ -259,7 +265,6 @@ def prepare_stage3(
         {
             "real": len(val_real_pool),
             "ffpp_fake": len(ffpp_fake_val),
-            "celebdf_fake": len(celebdf_fake_val),
             "sbi_fake": len(val_real_pool),
         },
         ratios,
@@ -270,7 +275,6 @@ def prepare_stage3(
 
     train_real = sample_without_replacement(train_real_pool, train_counts["real"], seed)
     train_ffpp_fake = sample_without_replacement(ffpp_fake_train, train_counts["ffpp_fake"], seed + 3)
-    train_celebdf_fake = sample_without_replacement(celebdf_fake_train, train_counts["celebdf_fake"], seed + 4)
     train_sbi: list[dict] = []
     if train_counts["sbi_fake"] > 0:
         train_sbi_sources = sample_without_replacement(train_real_pool, train_counts["sbi_fake"], seed + 5)
@@ -285,27 +289,26 @@ def prepare_stage3(
 
     val_real = sample_without_replacement(val_real_pool, val_counts["real"], seed + 7)
     val_ffpp_fake = sample_without_replacement(ffpp_fake_val, val_counts["ffpp_fake"], seed + 8)
-    val_celebdf_fake = sample_without_replacement(celebdf_fake_val, val_counts["celebdf_fake"], seed + 9)
     val_sbi: list[dict] = []
     if val_counts["sbi_fake"] > 0:
-        val_sbi_sources = sample_without_replacement(val_real_pool, val_counts["sbi_fake"], seed + 10)
+        val_sbi_sources = sample_without_replacement(val_real_pool, val_counts["sbi_fake"], seed + 9)
         val_sbi, _ = generate_sbi_samples(
             real_samples=val_sbi_sources,
             count=val_counts["sbi_fake"],
             output_root=output_root / "_generated_sbi",
             split_name="val",
-            seed=seed + 11,
+            seed=seed + 10,
             overwrite=overwrite,
         )
 
     materialize_split(
-        train_real + train_ffpp_fake + train_celebdf_fake + train_sbi,
+        train_real + train_ffpp_fake + train_sbi,
         output_root / "train",
         "train_manifest.jsonl",
         overwrite=overwrite,
     )
     materialize_split(
-        val_real + val_ffpp_fake + val_celebdf_fake + val_sbi,
+        val_real + val_ffpp_fake + val_sbi,
         output_root / "val",
         "val_manifest.jsonl",
         overwrite=overwrite,
@@ -313,6 +316,8 @@ def prepare_stage3(
     _materialize_tests(output_root, sources["celebdf_test"], sources["ffpp_test"], overwrite)
 
     print("Prepared stage3 dataset")
+    print("stage3 train sources: FF++ train + FF++ SBI only")
+    print("FF++ valid source:", valid_source)
     print("train counts:", train_counts)
     print("val counts:", val_counts)
 
@@ -328,9 +333,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--stage2-ffpp-fake-ratio", type=float, default=0.42)
     parser.add_argument("--stage2-sbi-fake-ratio", type=float, default=0.18)
-    parser.add_argument("--stage3-ffpp-fake-ratio", type=float, default=0.36)
-    parser.add_argument("--stage3-celebdf-fake-ratio", type=float, default=0.15)
-    parser.add_argument("--stage3-sbi-fake-ratio", type=float, default=0.09)
+    parser.add_argument("--stage3-real-ratio", type=float, default=0.40)
+    parser.add_argument("--stage3-ffpp-fake-ratio", type=float, default=0.45)
+    parser.add_argument("--stage3-sbi-fake-ratio", type=float, default=0.15)
     return parser.parse_args()
 
 
@@ -362,8 +367,8 @@ def main() -> None:
             args.seed,
             args.overwrite,
             ffpp_fake_ratio=args.stage3_ffpp_fake_ratio,
-            celebdf_fake_ratio=args.stage3_celebdf_fake_ratio,
             sbi_fake_ratio=args.stage3_sbi_fake_ratio,
+            real_ratio=args.stage3_real_ratio,
         )
 
 
