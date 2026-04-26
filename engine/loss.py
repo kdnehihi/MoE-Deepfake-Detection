@@ -58,7 +58,9 @@ class MoEFFDLoss(nn.Module):
         zero = torch.zeros(1, device=logits.device, dtype=logits.dtype).squeeze(0)
         lora_balance = torch.stack(lora_terms).mean() if lora_terms else zero
         adapter_balance = torch.stack(adapter_terms).mean() if adapter_terms else zero
-        load_balance = (self.lora_balance_scale * lora_balance) + (self.adapter_balance_scale * adapter_balance)
+        # FIX START
+        load_balance = lora_balance + adapter_balance
+        # FIX END
 
         total = classification + (self.load_balance_weight * load_balance)
         return LossOutput(total=total, classification=classification, load_balance=load_balance)

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import numpy as np
 import torch
 from torch import Tensor
 
@@ -43,23 +42,24 @@ class SparseDispatcher:
             dispatched = dispatched.squeeze(1)
         return torch.split(dispatched, self._part_sizes, dim=0)
 
-    def combine(self, expert_outputs: list[Tensor], multiply_by_gates: bool = False) -> Tensor:
+    def combine(self, expert_outputs: list[Tensor], multiply_by_gates: bool = True) -> Tensor:
         if not expert_outputs:
             raise ValueError("expert_outputs must not be empty when combining dispatched outputs.")
 
-        stitched = torch.cat(expert_outputs, dim=0).exp()
+        # FIX START
+        stitched = torch.cat(expert_outputs, dim=0)
         if multiply_by_gates:
-            stitched = stitched.mul(self._nonzero_gates)
+            stitched = stitched * self._nonzero_gates.to(dtype=stitched.dtype)
 
         zeros = torch.zeros(
             self._gates.size(0),
             expert_outputs[-1].size(1),
-            requires_grad=True,
+            dtype=stitched.dtype,
             device=stitched.device,
         )
-        combined = zeros.index_add(0, self._batch_index, stitched.float())
-        combined[combined == 0] = np.finfo(float).eps
-        return combined.log()
+        combined = zeros.index_add(0, self._batch_index, stitched)
+        return combined
+        # FIX END
 
     def expert_to_gates(self) -> tuple[Tensor, ...]:
         return torch.split(self._nonzero_gates, self._part_sizes, dim=0)
