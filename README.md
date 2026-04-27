@@ -4,6 +4,8 @@
 
 This repository contains a research-oriented PyTorch implementation of a Mixture-of-Experts (MoE) deepfake detector inspired by MoE-FFD.
 
+![Two-stage SBI + MoE-FFD framework](assets/two_stage_sbi_moeffd_framework.png)
+
 The current model design uses:
 
 - a frozen ViT backbone
@@ -17,7 +19,9 @@ The current baseline/model path is now aligned as closely as possible to the pub
 The codebase now supports two parallel experiment tracks:
 
 1. a reproducible **clean baseline**
-2. a **staged training framework** with offline SBI generation and progressive expert activation
+2. a **two-stage SBI training framework**:
+   - Stage 1: SBI pretraining on `FF++ original` vs synthetic SBI fakes
+   - Stage 2: full fine-tuning on the same `FF++` protocol as the clean MoE-FFD baseline
 
 The baseline must remain runnable and unchanged in spirit even as the staged framework evolves.
 
@@ -75,7 +79,7 @@ The current implementation keeps the repo pipeline, but the model internals now 
 - `SparseDispatcher`-style sparse dispatch / combine
 - load-balancing based on `cv_squared(importance) + cv_squared(load)`
 - total training objective:
-  - `cross_entropy + 1 * (200 * lora_balance + 1 * adapter_balance)`
+  - `cross_entropy + 1 * (lora_balance + adapter_balance)`
 
 Default expert layout:
 
@@ -90,9 +94,9 @@ Default expert layout:
 - Adapter bottleneck:
   - `8`
 
-## Staged Training Mode
+## Two-Stage SBI Training Mode
 
-The staged framework is intentionally progressive rather than single-stage.
+The SBI path in this repository now uses only two stages.
 
 ### Stage 1: SBI Pretraining
 
@@ -125,36 +129,12 @@ Stage 1 is intentionally aligned with the baseline story:
 - `Celeb-DF` remains an OOD evaluation target
 - model structure stays the same as the main MoE detector; only the training data changes
 
-### Stage 2: Real Deepfake Adaptation
+### Stage 2: MoE-FFD Fine-tuning
 
 Goal:
 
-- adapt from synthetic forgery cues to realistic manipulation patterns
-
-Model:
-
-- ViT frozen
-- LoRA on
-- adapter off
-- MoE router off
-- classifier on
-
-Default data idea:
-
-- Real: `40%`
-- Fake: `60%`
-
-Within fake:
-
-- FF++ dominant
-- Celeb-DF secondary
-- SBI disabled by default in this stage
-
-### Stage 3: Full MoE Specialization
-
-Goal:
-
-- enable local specialization and expert diversity
+- start from the Stage 1 checkpoint
+- then fine-tune on the same data protocol as the clean MoE-FFD baseline
 
 Model:
 
@@ -164,23 +144,22 @@ Model:
 - MoE router on
 - classifier on
 
-Recommended data idea:
+Data:
 
-- Real: `40%`
-- Fake: `60%`
-
-Within fake:
-
-- FF++: `60%`
-- Celeb-DF: `25%`
-- SBI: `15%`
+- train: `FF++ train` only
+- valid: `FF++ valid` if available, otherwise split from `FF++ train`
+- test-1: `FF++ test`
+- test-2: `Celeb-DF test`
+- real/fake balance follows the same clean baseline protocol
+- no `Celeb-DF` training samples
+- no Stage 3 refinement stage
 
 ### Checkpoint flow
 
-The staged pipeline is sequential:
+The two-stage pipeline is sequential:
 
-- Stage 2 loads the checkpoint from Stage 1
-- Stage 3 loads the checkpoint from Stage 2
+- Stage 1 trains on SBI
+- Stage 2 loads the checkpoint from Stage 1 and fine-tunes on the clean FF++ MoE-FFD recipe
 
 ## Important Data Constraints
 
@@ -228,7 +207,6 @@ moe-deepfake/
 ├── train_stage_common.py
 ├── train_stage1.py
 ├── train_stage2.py
-├── train_stage3.py
 ├── requirements.txt
 └── README.md
 ```
@@ -310,7 +288,7 @@ python evaluate_baseline.py \
 
 Use [baseline_clean_pipeline.ipynb](/Users/khoatran/coding/llm/moe-deepfake/baseline_clean_pipeline.ipynb) for the end-to-end Colab flow with the same paper-like baseline protocol.
 
-## Staged Pipeline Commands
+## Two-Stage SBI Commands
 
 ### Build Stage 1 dataset
 
@@ -342,45 +320,16 @@ python train_stage1.py \
 
 ### Build Stage 2 dataset
 
-```bash
-python data/prepare_stage_datasets.py \
-  --stage stage2 \
-  --celebdf-root data/processed/celebdf \
-  --ffpp-root data/processed/ffpp_generalization \
-  --output-root data/stages/stage2_real
-```
+Stage 2 reuses the clean baseline dataset directly.
 
 ### Train Stage 2
 
 ```bash
 python train_stage2.py \
-  --dataset-root data/stages/stage2_real \
+  --dataset-root data/baseline \
   --init-checkpoint outputs/stage1_last.pt \
   --batch-size 8 \
   --epochs 5 \
-  --num-workers 0 \
-  --image-size 224 \
-  --device mps
-```
-
-### Build Stage 3 dataset
-
-```bash
-python data/prepare_stage_datasets.py \
-  --stage stage3 \
-  --celebdf-root data/processed/celebdf \
-  --ffpp-root data/processed/ffpp_generalization \
-  --output-root data/stages/stage3_full
-```
-
-### Train Stage 3
-
-```bash
-python train_stage3.py \
-  --dataset-root data/stages/stage3_full \
-  --init-checkpoint outputs/stage2_last.pt \
-  --batch-size 8 \
-  --epochs 10 \
   --num-workers 0 \
   --image-size 224 \
   --device mps
